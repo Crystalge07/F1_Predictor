@@ -227,6 +227,66 @@ def test_live_predictions_can_never_be_deleted(conn, table):
     assert count(conn, table) == 1
 
 
+# INSERT OR REPLACE on an existing key = "delete the old row, insert this one".
+# One statement per table, each hitting the key of the row insert_run wrote
+# (run 1; leclerc; the 'grid' feature) with different values.
+REPLACE_SQL = {
+    "prediction_runs":
+        "INSERT OR REPLACE INTO prediction_runs (run_id, event_id, stage, mode, as_of_utc, "
+        "created_at_utc, model_version, settings_json) "
+        "VALUES (1, 1, 'post_quali', 'live', '2024-09-01T15:00:00Z', 'later', 'changed', '{}')",
+    "predictions":
+        "INSERT OR REPLACE INTO predictions (run_id, driver_id, predicted_rank, p_win, p_podium, "
+        "p_points, p_dnf) VALUES (1, 'leclerc', 1, 0.99, 0.99, 0.99, 0.0)",
+    "prediction_features":
+        "INSERT OR REPLACE INTO prediction_features (run_id, driver_id, feature, value, contribution) "
+        "VALUES (1, 'leclerc', 'grid', 20, 9.9)",
+}
+
+
+@pytest.mark.parametrize("table", list(REPLACE_SQL))
+def test_insert_or_replace_cannot_overwrite_a_live_prediction(conn, table):
+    # The bug this guards against: REPLACE's hidden delete used to skip the
+    # "never deleted" triggers, so this statement silently rewrote a live
+    # prediction. Now (recursive_triggers, db/connection.py) it's refused...
+    insert_run(conn, "live")
+    before = [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")]
+    with pytest.raises(sqlite3.IntegrityError, match="never deleted"):
+        conn.execute(REPLACE_SQL[table])
+    # ...and the row is exactly what was logged, not half-replaced.
+    assert [tuple(r) for r in conn.execute(f"SELECT * FROM {table}")] == before
+
+
+def test_get_connection_turns_on_recursive_triggers(conn):
+    # The REPLACE protection depends on this per-connection setting, so a
+    # change to get_connection that drops it should fail loudly here.
+    assert conn.execute("PRAGMA recursive_triggers").fetchone()[0] == 1
+
+
+def test_backtest_runs_can_still_be_replaced(conn):
+    # The fix mustn't over-block: backtest runs were always deletable (so a
+    # replay can be redone), so replacing one is allowed. It's a delete
+    # (cascading to its predictions and features) plus an insert.
+    insert_run(conn, "backtest")
+    conn.execute(REPLACE_SQL["prediction_runs"].replace("'live'", "'backtest'"))
+    assert conn.execute("SELECT model_version FROM prediction_runs").fetchone()[0] == "changed"
+    assert count(conn, "predictions") == 0       # the old run's rows went with it
+
+
+def test_only_one_live_run_per_race_and_stage(conn):
+    insert_run(conn, "live")                      # event 1, post_quali, live
+    second = ("INSERT INTO prediction_runs (event_id, stage, mode, as_of_utc, created_at_utc, "
+              "model_version, settings_json) VALUES (1, ?, ?, '2024-08-31T15:00:00Z', 'later', 'abc123', '{}')")
+    # A second live post_quali run for the same race is refused by the database.
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        conn.execute(second, ("post_quali", "live"))
+    # But the partial index only covers live runs of the same stage:
+    conn.execute(second, ("practice", "live"))       # a different stage: fine
+    conn.execute(second, ("post_quali", "backtest"))  # backtests repeat freely
+    conn.execute(second, ("post_quali", "backtest"))
+    assert count(conn, "prediction_runs") == 4
+
+
 def test_backtest_run_delete_removes_its_rows(conn):
     # Backtests can be re-run: deleting the run cascades to its predictions
     # and feature rows, so nothing is left dangling.

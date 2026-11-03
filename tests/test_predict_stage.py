@@ -108,6 +108,21 @@ def test_live_run_is_logged_and_cannot_be_deleted(conn, weekend):
         conn.execute("DELETE FROM prediction_runs WHERE run_id = ?", (run_id,))
 
 
+def test_a_second_live_run_is_refused_even_without_the_live_checks(conn, weekend):
+    # The tick checks "no live run yet" (live_problems) before writing. This
+    # skips that check and calls write_run directly, the way a buggy script
+    # might: the database itself must refuse the second live run, and
+    # write_run's transaction must leave no stray rows from the attempt.
+    prediction = make_prediction(conn, weekend["event"], "post_quali", n_sims=N_SIMS)
+    write_run(conn, prediction, "live")
+    counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+              for t in ["prediction_runs", "predictions", "prediction_features"]}
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        write_run(conn, prediction, "live")
+    for table, n in counts.items():
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == n, table
+
+
 def test_model_version_names_commit_and_settings():
     # e.g. 'a1b2c3d+settings.9f8e7d6c' or 'a1b2c3d-dirty+settings.9f8e7d6c'
     assert re.fullmatch(r"(nogit|[0-9a-f]{4,40}(-dirty)?)\+settings\.[0-9a-f]{8}", model_version())

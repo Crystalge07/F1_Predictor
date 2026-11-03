@@ -492,6 +492,16 @@ CREATE TABLE IF NOT EXISTS pipeline_alerts (
 -- "Every run for this event", for the dashboard's per-weekend timeline.
 CREATE INDEX IF NOT EXISTS idx_runs_event ON prediction_runs (event_id, stage);
 
+-- At most ONE live run per race and stage: the live prediction is the one
+-- made before the cutoff, and there can't be a second, "better" one logged
+-- later. predict/stage.live_problems already checks this before writing;
+-- this index makes the database refuse it too, whatever code tries.
+-- "WHERE mode = 'live'" makes it a partial index: it only covers live rows,
+-- so backtests can still log the same race and stage many times (replays).
+-- Partial unique indexes work the same way in Postgres.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_live_run_per_stage
+    ON prediction_runs (event_id, stage) WHERE mode = 'live';
+
 -- The "never edited" rule, enforced by the database itself rather than by
 -- everyone remembering it. A trigger is code the database runs automatically
 -- when something happens to a table; RAISE(ABORT, ...) cancels the change.

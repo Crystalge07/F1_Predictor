@@ -30,6 +30,21 @@ def get_connection(db_path: Path | str = config.DB_PATH) -> sqlite3.Connection:
     # With it, SQLite raises an error, which catches loader bugs early.
     conn.execute("PRAGMA foreign_keys = ON")
 
+    # Makes the prediction log's "never deleted" triggers (schema.sql) also
+    # catch INSERT OR REPLACE. When REPLACE hits a row that already exists,
+    # SQLite quietly DELETES the old row and inserts the new one. By default
+    # that hidden delete skips DELETE triggers, so REPLACE could overwrite a
+    # live prediction without any error. With recursive_triggers on, the
+    # hidden delete runs the triggers like any other delete, and the
+    # overwrite is refused.
+    # Like foreign_keys, this only lasts for this one connection, which is
+    # why every module gets its connection from here. (Connections opened
+    # some other way, e.g. the sqlite3 command line, are still caught by the
+    # upload guard, db/guard.py, before the database is uploaded.)
+    # The only triggers in the schema are the prediction log's, so nothing
+    # else is affected; the data loaders use ON CONFLICT DO UPDATE, not REPLACE.
+    conn.execute("PRAGMA recursive_triggers = ON")
+
     # By default, rows come back as plain tuples: row[0], row[1]...
     # sqlite3.Row lets us also access columns by name: row["driver_id"],
     # which is much more readable and survives column reordering.
