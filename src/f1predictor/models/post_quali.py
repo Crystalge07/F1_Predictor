@@ -23,6 +23,10 @@ from f1predictor.features.post_quali import FEATURE_COLUMNS
 # The first season of the new regulations, whose rows get the extra weight.
 REGULATION_RESET_SEASON = 2026
 
+# The 2026 multiplier chosen by scripts/train_post_quali.py (2026-11-02). Every
+# value from 1 to 12 scored within 0.04 places, so it barely matters yet.
+WEIGHT_2026 = 3.0
+
 # XGBoost settings. Deliberately conservative: we only have ~3,300 training
 # rows, and a big, deep model would memorise noise (overfit).
 #   n_estimators   how many small trees are added one after another
@@ -61,13 +65,22 @@ def train_model(train: pd.DataFrame, weight_2026: float = 1.0) -> xgb.XGBRegress
     return model
 
 
-def predict_order(model: xgb.XGBRegressor, race: pd.DataFrame) -> list[str]:
-    """Predicted finishing order for one race: driver_ids, predicted winner first.
+def predict_positions(model: xgb.XGBRegressor, race: pd.DataFrame) -> pd.DataFrame:
+    """The model's expected finishing position for each driver in one race.
 
     `race` is the feature rows for that race, ALL drivers (including those who
     will go on to retire: we don't know that on Saturday).
+
+    Returns the race rows with a new `expected_position` column. These are the
+    raw numbers the Monte Carlo simulator starts from (e.g. 3.4 vs 3.9 means
+    "slightly ahead"), not whole places.
     """
-    scored = race.assign(predicted=model.predict(race[FEATURE_COLUMNS]))
+    return race.assign(expected_position=model.predict(race[FEATURE_COLUMNS]))
+
+
+def predict_order(model: xgb.XGBRegressor, race: pd.DataFrame) -> list[str]:
+    """Predicted finishing order for one race: driver_ids, predicted winner first."""
+    scored = predict_positions(model, race).rename(columns={"expected_position": "predicted"})
     # Sort by predicted position; if two drivers tie exactly, the one starting
     # further forward goes first, then driver_id so the order is always the same.
     scored = scored.sort_values(["predicted", "grid", "driver_id"])

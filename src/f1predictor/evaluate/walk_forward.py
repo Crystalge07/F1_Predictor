@@ -13,20 +13,24 @@ here because the dataset is small (a model trains in well under a second).
 """
 
 from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
 # A "trainer" takes the training rows and returns a function that turns one
-# race's rows into a predicted order. Passing it in (instead of hard-coding
-# XGBoost) lets tests plug in a fake trainer and check what it was given.
-Trainer = Callable[[pd.DataFrame], Callable[[pd.DataFrame], list[str]]]
+# race's rows into a prediction. Usually that's a predicted order (a list of
+# driver_ids), but it can be anything, e.g. a table of expected positions for
+# the simulator. Passing it in (instead of hard-coding XGBoost) lets tests plug
+# in a fake trainer and check what it was given.
+Trainer = Callable[[pd.DataFrame], Callable[[pd.DataFrame], Any]]
 
 
 def walk_forward(features: pd.DataFrame, test_session_ids: list[int],
-                 trainer: Trainer) -> dict[int, list[str]]:
-    """Predicted order for every test race, each from a model trained only on earlier races.
+                 trainer: Trainer) -> dict[int, Any]:
+    """A prediction for every test race, each from a model trained only on earlier races.
 
-    Returns {session_id: [driver_ids in predicted order]}.
+    Returns {session_id: whatever the trainer's predict function returned},
+    e.g. {session_id: [driver_ids in predicted order]}.
     """
     predictions = {}
     for session_id in test_session_ids:

@@ -14,6 +14,8 @@ comes with the pre-weekend model in Phase 3.)
 
 import sqlite3
 
+import pandas as pd
+
 
 def race_sessions(conn: sqlite3.Connection, seasons: list[int] | None = None) -> list[sqlite3.Row]:
     """All race sessions that have results, in date order.
@@ -82,3 +84,29 @@ def grid_order(conn: sqlite3.Connection, session_id: int) -> list[str]:
         return (starts_from_pit_lane, row["grid"], quali, row["driver_id"])
 
     return [row["driver_id"] for row in sorted(rows, key=sort_key)]
+
+
+def grid_probabilities(history: pd.DataFrame, race: pd.DataFrame) -> pd.DataFrame:
+    """Grid-only probability baseline: P(win) and P(podium) from the starting slot alone.
+
+    The probability version of grid_order. Each driver gets the share of past
+    races in which the driver starting from their slot went on to win (or
+    finish on the podium). E.g. if pole won 104 of 192 earlier races, the
+    pole-sitter gets P(win) = 0.54.
+
+    Both arguments are post-quali feature tables (see features/post_quali.py):
+        history: rows from races BEFORE this one (the baseline learns from them)
+        race:    the rows of the race to forecast
+    They need `grid` (pit-lane starts already moved to the back) and
+    `actual_position` (retirements included: a DNF is "not a podium").
+
+    A slot never seen in history (e.g. 23rd in a big field) gets 0. Returns the
+    race rows with p_win and p_podium columns added.
+    """
+    # Group past rows by grid slot; the mean of a True/False column is the
+    # share of True, i.e. the historical rate for that slot.
+    by_slot = history.assign(won=history["actual_position"] == 1,
+                             podium=history["actual_position"] <= 3) \
+                     .groupby("grid")[["won", "podium"]].mean()
+    rates = race["grid"].map(by_slot["won"]).fillna(0.0), race["grid"].map(by_slot["podium"]).fillna(0.0)
+    return race.assign(p_win=rates[0].values, p_podium=rates[1].values)
