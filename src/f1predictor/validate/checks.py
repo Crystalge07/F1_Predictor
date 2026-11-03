@@ -41,6 +41,13 @@ MIN_LAP_COVERAGE = 0.9
 # driver retired, while Jolpica doesn't count it.
 LAP_COUNT_TOLERANCE = 1
 
+# How many drivers may qualify and then have no race result before the result
+# counts as broken. A driver can genuinely withdraw between qualifying and the
+# race, and Jolpica then leaves them out of the result: in 2018-2026 that
+# happened exactly once (Stroll, 2025 round 9). So one missing qualifier is a
+# warning; two or more is far likelier a partial result than two withdrawals.
+MAX_WITHDRAWALS = 1
+
 # Warn if more than this share of a session's laps have no tyre stint.
 MAX_LAPS_WITHOUT_STINT = 0.05
 
@@ -148,6 +155,30 @@ def check_classification(conn: sqlite3.Connection, session_id: int) -> list[Issu
     if usual is not None and n != usual:
         issues.append(Issue("unusual_entry_count", "warning",
                             f"{n} results; this season usually has {usual}", session_id))
+
+    # Drivers who qualified at this event but are missing from this result.
+    # The checks above can miss a dropped row: if the LAST finisher is the
+    # one missing, positions are still 1..n with no gap. Every driver who
+    # starts is in the result (retirements included), so a missing qualifier
+    # is either a withdrawal (rare, see MAX_WITHDRAWALS) or a broken result.
+    # Only for races: sprint qualifying isn't stored in the qualifying table.
+    # Skipped when the event's qualifying isn't loaded (e.g. mid-backfill).
+    missing = [row["driver_id"] for row in conn.execute(
+        """
+        SELECT q.driver_id FROM qualifying q
+        JOIN sessions qs   ON qs.session_id = q.session_id AND qs.session_type = 'Q'
+        JOIN sessions race ON race.event_id = qs.event_id AND race.session_type = 'R'
+        WHERE race.session_id = ?
+          AND NOT EXISTS (SELECT 1 FROM results r
+                          WHERE r.session_id = race.session_id AND r.driver_id = q.driver_id)
+        ORDER BY q.driver_id
+        """, (session_id,))]
+    if len(missing) > MAX_WITHDRAWALS:
+        issues.append(Issue("qualifiers_missing_from_result", "error",
+                            f"{len(missing)} drivers qualified but have no result: {missing}", session_id))
+    elif missing:
+        issues.append(Issue("qualifier_missing_from_result", "warning",
+                            f"{missing[0]} qualified but has no result (withdrew?)", session_id))
     return issues
 
 
@@ -253,6 +284,26 @@ def check_openf1_session(conn: sqlite3.Connection, session_id: int) -> list[Issu
             if mismatched:
                 issues.append(Issue("lap_count_mismatch", "warning",
                                     "OpenF1 vs official laps: " + ", ".join(mismatched), session_id))
+
+            # A driver who drove (official laps completed > the retirement-lap
+            # tolerance) but has NO OpenF1 laps at all. The coverage check above
+            # can't see this: it only counts drivers OpenF1 has an entry for, so a
+            # car missing from OpenF1 entirely drops out of both sides of the sum.
+            # Matched by car number, which both sources have even when a car
+            # isn't matched to a driver_id yet. Only when OpenF1 has data for
+            # the session (per_driver non-empty). Calibrated on 2023-2026 (112 races
+            # and sprints with OpenF1 laps): never happens in good data.
+            no_laps = [row["driver_id"] for row in conn.execute(
+                """
+                SELECT r.driver_id FROM results r
+                WHERE r.session_id = ? AND r.laps_completed > ? AND r.position_text <> 'D'
+                  AND NOT EXISTS (SELECT 1 FROM laps l
+                                  WHERE l.session_id = r.session_id AND l.car_number = r.car_number)
+                ORDER BY r.driver_id
+                """, (session_id, LAP_COUNT_TOLERANCE))]
+            if no_laps:
+                issues.append(Issue("driver_missing_from_laps", "error",
+                                    f"Official result has laps for {no_laps}, OpenF1 has none", session_id))
 
     # --- Unmatched drivers: expected in practice (rookies), not in Q/S/R ---
     if session_type in ("Q", "SQ", "S", "R"):

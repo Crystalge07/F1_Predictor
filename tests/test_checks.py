@@ -95,6 +95,46 @@ def test_unusual_field_size_is_only_a_warning(conn):
         ("unusual_entry_count", "warning")}
 
 
+def add_qualifying(conn, race_session_id, drivers):
+    """A qualifying session at the race's event, with `drivers` (d1, d2, ...) in order."""
+    event_id = conn.execute("SELECT event_id FROM sessions WHERE session_id = ?",
+                            (race_session_id,)).fetchone()[0]
+    q = conn.execute("INSERT INTO sessions (event_id, session_type) VALUES (?, 'Q')", (event_id,)).lastrowid
+    # Qualifiers who got no race result aren't in `drivers` yet (make_race
+    # only adds the finishers it creates).
+    conn.executemany("INSERT INTO drivers (driver_id, given_name, family_name) VALUES (?, 'X', 'Y') "
+                     "ON CONFLICT DO NOTHING", [(d,) for d in drivers])
+    conn.executemany("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                     "VALUES (?, ?, 't', ?)", [(q, d, p) for p, d in enumerate(drivers, start=1)])
+
+
+def test_two_qualifiers_missing_from_the_result_is_an_error(conn):
+    # 20 qualified, but the result only has the first 18 finishers. Positions
+    # 1..18 have no gap and 18 is above the "too few" floor, so before this
+    # check the broken result would have been saved.
+    race = make_race(conn, n_drivers=18)
+    add_qualifying(conn, race, [f"d{p}" for p in range(1, 21)])
+    issues = checks.check_classification(conn, race)
+    assert ("qualifiers_missing_from_result", "error") in check_names(issues)
+    assert "d19" in str(issues) and "d20" in str(issues)
+
+
+def test_one_qualifier_missing_is_only_a_warning(conn):
+    # Real case, Spain 2025: Stroll qualified, then withdrew (injury), and
+    # Jolpica rightly leaves him out of the race result. Must not block it.
+    race = make_race(conn, n_drivers=19)
+    add_qualifying(conn, race, [f"d{p}" for p in range(1, 21)])
+    assert check_names(checks.check_classification(conn, race)) == {
+        ("qualifier_missing_from_result", "warning")}
+
+
+def test_result_without_qualifying_loaded_skips_the_qualifier_check(conn):
+    # Mid-backfill, results load before qualifying: nothing to compare with.
+    race = make_race(conn, n_drivers=18)
+    assert not {c for c, _ in check_names(checks.check_classification(conn, race))
+                if "qualifier" in c}
+
+
 def test_quali_disqualification_duplicates_are_only_a_warning(conn):
     # Real case, Zandvoort 2024: Albon disqualified, but Jolpica lists him at
     # P10 AND moves Sainz up to P10. Positions: 1..10, 10, 11..19.
@@ -181,6 +221,37 @@ def test_half_a_race_is_an_error(conn):
     race = make_race(conn)
     add_openf1_data(conn, race, laps_per_car=20)   # official result says 50 each
     assert ("race_laps_incomplete", "error") in check_names(checks.check_openf1_session(conn, race))
+
+
+def test_a_driver_missing_from_openf1_entirely_is_an_error(conn):
+    # d20 drove 50 laps (official result) but OpenF1 has no entry and no
+    # laps for car 20. The coverage check can't see it (19 cars x 50 laps
+    # vs 19 cars x 50 laps is 100%), so this needs its own check.
+    race = make_race(conn)
+    add_openf1_data(conn, race, laps_per_car=50, cars=range(1, 20))
+    issues = checks.check_openf1_session(conn, race)
+    assert check_names(issues) == {("driver_missing_from_laps", "error")}
+    assert "d20" in str(issues)
+
+
+def test_a_first_lap_retirement_without_openf1_laps_is_fine(conn):
+    # Official laps_completed of 0 or 1 (crashed at the start): OpenF1 may
+    # well have no timed lap for them, which is correct, not missing data.
+    race = make_race(conn, overrides={20: {"laps_completed": 1}})
+    add_openf1_data(conn, race, laps_per_car=50, cars=range(1, 20))
+    assert "driver_missing_from_laps" not in {c for c, _ in check_names(checks.check_openf1_session(conn, race))}
+
+
+def test_a_disqualified_driver_without_openf1_laps_is_not_flagged(conn):
+    race = make_race(conn, overrides={20: {"position_text": "D"}})
+    add_openf1_data(conn, race, laps_per_car=50, cars=range(1, 20))
+    assert "driver_missing_from_laps" not in {c for c, _ in check_names(checks.check_openf1_session(conn, race))}
+
+
+def test_a_race_without_any_openf1_data_is_not_flagged(conn):
+    # Before 2023 there's no OpenF1 data at all: that's not "every driver missing".
+    race = make_race(conn)
+    assert "driver_missing_from_laps" not in {c for c, _ in check_names(checks.check_openf1_session(conn, race))}
 
 
 def test_missing_stints_and_weather_are_warnings(conn):

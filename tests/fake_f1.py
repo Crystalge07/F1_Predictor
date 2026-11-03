@@ -17,9 +17,20 @@ results aren't identical every race. Every round's starting grid has one
 penalty: the pole-sitter drops to 4th, so "grid from the starting grid" and
 "grid from qualifying order" are easy to tell apart.
 
-`broken` makes things go wrong on purpose: a set of (season, round,
-session_type) whose OpenF1 data is never published, and 'grid' in it means no
-starting grid for that round.
+Knobs that make things go wrong on purpose (all keyed by (season, round, X)):
+
+    broken       a set: OpenF1 data for session X is never published; X = 'grid'
+                 means no starting grid for that round.
+    cancelled    a set: session X isn't on the calendar at all (Jolpica's
+                 schedule and OpenF1's session list both leave it out).
+    empty_until  {key: datetime}: the data is LATE. Before that time, OpenF1
+                 answers session X with an empty lap list, or (X = 'results')
+                 Jolpica's results leave the round out. Tests can change it.
+    tamper       {key: kind}: the data is BROKEN, until a test removes the key.
+                 OpenF1 session X: 'drop_driver' (d20 missing from drivers,
+                 laps and stints) or 'half_laps' (only the first half of the
+                 laps). X = 'results': 'drop_two' (the last two finishers are
+                 missing from Jolpica's race result).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -75,12 +86,21 @@ def starting_grid(season: int, rnd: int) -> list[str]:
 
 
 class FakeF1:
-    def __init__(self, now: datetime, broken: set | None = None):
+    def __init__(self, now: datetime, broken: set | None = None, cancelled: set | None = None,
+                 empty_until: dict | None = None, tamper: dict | None = None):
         self.now = now
         self.broken = broken or set()
+        self.cancelled = cancelled or set()
+        self.empty_until = empty_until or {}
+        self.tamper = tamper or {}
         self.requests = 0
 
     # --- helpers ---------------------------------------------------------------
+    def _late(self, season, rnd, what) -> bool:
+        """True while `what` is still empty_until-delayed (see the module docstring)."""
+        until = self.empty_until.get((season, rnd, what))
+        return until is not None and self.now < until
+
     def _published(self, season, rnd, session_type, delay=PUBLISH_DELAY) -> bool:
         race_day = CALENDAR[season][rnd - 1]
         end = session_start(race_day, session_type) + timedelta(hours=LENGTH[session_type])
@@ -121,7 +141,8 @@ class FakeF1:
         elif parts[1] == "results":
             races = [dict(self._schedule_race(season, rnd), Results=self._results(season, rnd))
                      for rnd in range(1, len(CALENDAR[season]) + 1)
-                     if season < 2027 or self._published(season, rnd, "R", RESULTS_DELAY)]
+                     if season < 2027 or (self._published(season, rnd, "R", RESULTS_DELAY)
+                                          and not self._late(season, rnd, "results"))]
         elif parts[1] == "qualifying":
             races = [dict(self._schedule_race(season, rnd), QualifyingResults=self._qualifying(season, rnd))
                      for rnd in range(1, len(CALENDAR[season]) + 1)
@@ -138,17 +159,22 @@ class FakeF1:
                 "date": race_day, "time": "15:00:00Z"}
         for key, session_type in [("FirstPractice", "FP1"), ("SecondPractice", "FP2"),
                                   ("ThirdPractice", "FP3"), ("Qualifying", "Q")]:
+            if (season, rnd, session_type) in self.cancelled:
+                continue                         # not on the calendar
             start = session_start(race_day, session_type)
             race[key] = {"date": start.strftime("%Y-%m-%d"), "time": start.strftime("%H:%M:%SZ")}
         return race
 
     def _results(self, season, rnd):
         grid = {d: i for i, d in enumerate(starting_grid(season, rnd), start=1)}
+        finishers = order(season, rnd, salt=2)
+        if self.tamper.get((season, rnd, "results")) == "drop_two":
+            finishers = finishers[:-2]           # a partial result: last two rows lost
         return [{"number": str(NUMBER[d]), "position": str(p), "positionText": str(p),
                  "points": str(POINTS[p - 1] if p <= 10 else 0), "Driver": self._driver(d),
                  "Constructor": self._constructor(d), "grid": str(grid[d]), "laps": str(RACE_LAPS),
                  "status": "Finished", "Time": {"millis": str(5_400_000 + p * 1000)}}
-                for p, d in enumerate(order(season, rnd, salt=2), start=1)]
+                for p, d in enumerate(finishers, start=1)]
 
     def _qualifying(self, season, rnd):
         return [{"number": str(NUMBER[d]), "position": str(p), "Driver": self._driver(d),
@@ -164,7 +190,8 @@ class FakeF1:
                      "session_name": {"FP1": "Practice 1", "FP2": "Practice 2", "FP3": "Practice 3",
                                       "Q": "Qualifying", "R": "Race"}[t],
                      "date_start": session_start(day, t).isoformat(), "country_name": "Testland"}
-                    for rnd, day in enumerate(CALENDAR[season], start=1) for t in SESSION_OFFSETS]
+                    for rnd, day in enumerate(CALENDAR[season], start=1) for t in SESSION_OFFSETS
+                    if (season, rnd, t) not in self.cancelled]
 
         season, rnd, session_type = self._find_key(params["session_key"])
         if endpoint == "starting_grid":
@@ -176,10 +203,17 @@ class FakeF1:
         if (season, rnd, session_type) in self.broken or not self._published(season, rnd, session_type):
             raise http_404()                     # not published (yet, or ever)
 
+        tamper = self.tamper.get((season, rnd, session_type))
+        # 'drop_driver': d20 isn't in this session's data at all.
+        drivers = DRIVERS[:-1] if tamper == "drop_driver" else DRIVERS
         if endpoint == "drivers":
             return [{"driver_number": NUMBER[d], "name_acronym": d.upper(), "full_name": d,
-                     "team_name": TEAM[d].upper()} for d in DRIVERS]
+                     "team_name": TEAM[d].upper()} for d in drivers]
         n_laps = {"Q": 3, "R": RACE_LAPS}.get(session_type, 8)
+        if endpoint == "laps" and self._late(season, rnd, session_type):
+            return []                            # published, but no laps in it yet
+        # 'half_laps': OpenF1 only has the first half of the session.
+        laps_served = n_laps // 2 if tamper == "half_laps" else n_laps
         pace = {d: i for i, d in enumerate(order(season, rnd, salt=len(session_type)), start=1)}
         if endpoint == "laps":
             start = session_start(CALENDAR[season][rnd - 1], session_type)
@@ -188,10 +222,10 @@ class FakeF1:
                      # Out-lap and in-lap slower; a clean run in between.
                      "lap_duration": 90 + pace[d] * 0.1 + (5 if lap in (1, n_laps) else lap * 0.02),
                      "is_pit_out_lap": lap == 1}
-                    for d in DRIVERS for lap in range(1, n_laps + 1)]
+                    for d in drivers for lap in range(1, laps_served + 1)]
         if endpoint == "stints":
             return [{"driver_number": NUMBER[d], "stint_number": 1, "compound": "MEDIUM",
-                     "lap_start": 1, "lap_end": n_laps, "tyre_age_at_start": 0} for d in DRIVERS]
+                     "lap_start": 1, "lap_end": n_laps, "tyre_age_at_start": 0} for d in drivers]
         if endpoint == "weather":
             return [{"date": session_start(CALENDAR[season][rnd - 1], session_type).isoformat(),
                      "air_temperature": 22.0, "rainfall": 0}]

@@ -15,10 +15,12 @@ The scheduler runs this every hour (Phase 5, step 5). Each tick:
                 prediction is built and checked in memory, and only then written.
     3. SCORE    plan again, then score every race whose result is in.
     4. REPORT   record the tick in pipeline_ticks, and raise alerts for
-                problems that matter: blocked predictions (including a run
-                that failed to write), scoring that failed, stages missed,
-                sessions given up on, Jolpica data late. (A single failed
-                fetch isn't one: data a few minutes late is normal.) Each alert is raised once
+                problems that matter: data that failed validation (bad,
+                not just late: alerted at once), blocked predictions
+                (including a run that failed to write), scoring that
+                failed, stages missed, sessions given up on, Jolpica data
+                late. (A fetch that failed because the data isn't there yet
+                isn't one: data a few minutes late is normal.) Each alert is raised once
                 (pipeline_alerts); the tick returns how many are new, and the
                 command-line script exits with an error if there are any,
                 which is what makes GitHub Actions send an email.
@@ -97,6 +99,22 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
     # problems that last are alerted by the planner ('gave_up', 'late'), and
     # what really matters (a prediction blocked or missed) is alerted below.
     report.fetched = run_fetches(conn, plan(conn, now), now, jolpica_client, openf1_client)
+    # ...but BAD data is (decision 2026-11-03): a fetch that failed because
+    # validation found errors (a partial result, a driver missing) is not
+    # going to fix itself in a few minutes like late data does. The batch
+    # was rolled back, so nothing of it is saved, and the loaders stored the
+    # errors in validation_issues under the item's key. Alerted once per
+    # item; the next ticks still retry, in case the source corrects it.
+    for item_key, status in report.fetched.items():
+        if status != "failed":
+            continue
+        errors = [row["detail"] for row in conn.execute(
+            "SELECT detail FROM validation_issues WHERE item_key = ? AND severity = 'error' "
+            "ORDER BY check_name", (item_key,))]
+        if errors:
+            report.alerts.append((f"invalid:{item_key}",
+                                  f"invalid data, not saved: {item_key}: {'; '.join(errors)}; "
+                                  "retried every tick until it validates"))
 
     # --- 2. Predict ----------------------------------------------------------
     for action in plan(conn, now):
