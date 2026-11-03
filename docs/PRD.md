@@ -171,6 +171,8 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 - **Lap data source:** OpenF1 (free, 2023+) instead of FastF1 (now needs a paid F1TV subscription).
 - **Database access:** raw standard SQL with `sqlite3`, no ORM, kept Postgres-compatible.
 - **Telemetry:** not stored; no planned feature needs it.
+- **DNFs in the position model:** the model predicts finishing position *given the driver finishes*; retirements are left out of the training target. DNF risk is handled in the Phase 3 Monte Carlo step. Scoring still covers the full grid (retirements included), the same as the baselines.
+- **Features (Phase 2):** computed on the fly into a DataFrame for now; the stored `features` table comes in Phase 4 with the prediction log.
 - **Drivers without a Jolpica id:** `session_entries` table with nullable driver/team ids (see Edge cases).
 
 **Open questions**
