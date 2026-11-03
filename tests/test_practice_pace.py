@@ -10,6 +10,15 @@ from f1predictor.db.connection import get_connection, init_db
 from f1predictor.features.practice_pace import practice_pace
 
 
+@pytest.fixture(autouse=True)
+def no_fuel_correction(monkeypatch):
+    """These tests use hand-worked lap times without fuel correction, whatever
+    value is currently tuned. (autouse = applied to every test in this file;
+    the fuel test overrides it.)"""
+    import f1predictor.features.practice_pace as pp
+    monkeypatch.setattr(pp, "FUEL_EFFECT_MS_PER_LAP", 0.0)
+
+
 @pytest.fixture
 def conn():
     connection = get_connection(":memory:")
@@ -113,3 +122,27 @@ def test_unmatched_practice_drivers_are_skipped(conn):
     assert set(pace["driver_id"]) == {"a", "b"}
     # The rookie's faster laps also don't become the reference "best car".
     assert pace_of(pace, "a")["long_run_gap_pct"] == 0.0
+
+
+
+def test_fuel_correction_evens_out_burn_off(conn, monkeypatch):
+    import f1predictor.features.practice_pace as pp
+    s = add_weekend(conn, {"FP2": "2024-03-01T15:00:00Z", "Q": "2024-03-02T15:00:00Z",
+                           "R": "2024-03-03T15:00:00Z"})
+    # Both cars have the same underlying pace, but 'a' does a LONG stint (12
+    # clean laps), getting 100 ms faster every lap purely from burning fuel,
+    # while 'b' does a short 6-lap one. Uncorrected, a's later, lighter laps
+    # flatter its median; corrected, the gap shrinks to what's left of the
+    # shorter stint's own burn-off.
+    add_stint(conn, s["FP2"], 1, "a", 1, 1, [120_000] + [90_000 - 100 * i for i in range(12)] + [130_000])
+    add_stint(conn, s["FP2"], 2, "b", 1, 1, [120_000] + [90_000 - 100 * i for i in range(6)] + [130_000])
+
+    monkeypatch.setattr(pp, "FUEL_EFFECT_MS_PER_LAP", 0.0)
+    raw = pace_of(practice_pace(conn), "b")["long_run_gap_pct"]
+    monkeypatch.setattr(pp, "FUEL_EFFECT_MS_PER_LAP", 100.0)
+    corrected = pace_of(practice_pace(conn), "b")["long_run_gap_pct"]
+
+    # Raw medians: a = 89.45 s (laps from 90.0 down to 88.9), b = 89.75 s.
+    assert raw == pytest.approx((89_750 / 89_450 - 1) * 100)
+    # Corrected, every lap of both cars becomes 90.1 s: identical pace.
+    assert corrected == pytest.approx(0.0)

@@ -29,17 +29,28 @@ What makes a long-run lap "clean":
     * the stint has at least MIN_LONG_RUN_LAPS clean laps left (otherwise it's a
       short qualifying-style run, not a long run)
 
-Simplification (written down, not hidden): no fuel correction. Teams run
-different, secret fuel loads, so a car running heavy looks a bit slow. The
-PRD mentions fuel-correcting; it can be added later if the feature proves useful.
+Fuel correction: a car gets faster every lap as it burns fuel. So each
+long-run lap is put back on start-of-stint fuel before taking the median:
+
+    corrected lap = lap time + FUEL_EFFECT_MS_PER_LAP * (laps into the stint)
+
+That makes stints of different lengths comparable. What it CAN'T fix: teams
+start runs with different, secret fuel loads, so a car running heavy still
+looks a bit slow. The per-lap effect is tuned by scripts/tune_fuel_correction.py
+(0 = no correction).
 """
 
 import sqlite3
 
 import pandas as pd
 
+from f1predictor import settings
+
 MIN_LONG_RUN_LAPS = 5
 CLEAN_LAP_LIMIT = 1.05  # laps slower than 105% of the stint median are dropped
+# Milliseconds a car gains per lap from burning fuel (roughly 1.5-2 kg of fuel
+# a lap at ~0.03 s per kg -> ~50 ms). Stored in tuned_settings.json.
+FUEL_EFFECT_MS_PER_LAP: float = settings.load()["fuel_effect_ms_per_lap"]
 
 PRACTICE_PACE_COLUMNS = ["long_run_gap_pct", "short_run_gap_pct"]
 
@@ -102,17 +113,24 @@ def _long_run_pace(laps: pd.DataFrame) -> pd.DataFrame:
     clean_laps_in_stint = clean.groupby(stint_keys)["lap_time_ms"].transform("count")
     long_runs = clean[clean_laps_in_stint >= MIN_LONG_RUN_LAPS]
 
-    # Step 4: each driver's pace in each session = median of their long-run
+    # Step 4: fuel correction. A lap 8 laps into a stint is ~8 laps of fuel
+    # lighter than the first, so add that time back. (Done after the slow-lap
+    # filter, which compares laps within one stint and doesn't need it.)
+    laps_into_stint = long_runs["lap_number"] - long_runs["stint_first_lap"]
+    long_runs = long_runs.assign(
+        lap_time_ms=long_runs["lap_time_ms"] + FUEL_EFFECT_MS_PER_LAP * laps_into_stint)
+
+    # Step 5: each driver's pace in each session = median of their long-run
     # laps. Median rather than mean, so one odd lap can't drag it around.
     per_session = (long_runs.groupby(["race_session_id", "session_id", "driver_id"], as_index=False)
                    ["lap_time_ms"].median())
 
-    # Step 5: compare drivers WITHIN a session (same track, same conditions):
+    # Step 6: compare drivers WITHIN a session (same track, same conditions):
     # % slower than the best long-run pace in that session.
     best = per_session.groupby("session_id")["lap_time_ms"].transform("min")
     per_session["gap"] = (per_session["lap_time_ms"] / best - 1) * 100
 
-    # Step 6: one number per weekend: the average over the sessions where the
+    # Step 7: one number per weekend: the average over the sessions where the
     # driver did a long run.
     return (per_session.groupby(["race_session_id", "driver_id"], as_index=False)["gap"].mean()
             .rename(columns={"gap": "long_run_gap_pct"}))

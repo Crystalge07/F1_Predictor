@@ -20,5 +20,6 @@
       "anchor_weight": 0.75,
       "noise_sd": 2.0
     }
-  }
+  },
+  "fuel_effect_ms_per_lap": 30.0
 }
