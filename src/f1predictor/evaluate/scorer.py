@@ -238,3 +238,37 @@ def summary(conn: sqlite3.Connection, season: int, mode: str = "backtest",
 
     table["improvement"] = table.apply(improvement, axis=1) if not table.empty else []
     return table
+
+
+# -----------------------------------------------------------------------------
+# Which scorecard a run belongs to
+# -----------------------------------------------------------------------------
+#
+# Three groups of runs must never be added together (docs/evaluation-protocol.md):
+#     backtest      replays of past seasons: in-sample, a pipeline check
+#     live rehearsal the 2026 live dress rehearsal (rounds 20-23): real live
+#                    predictions, but a tiny sample made right after the
+#                    settings were chosen on 2026. Not the resume metric.
+#     live          2027 onward: the real out-of-sample test.
+# summary() already keeps seasons and modes apart; these labels are what every
+# printout and dashboard shows next to the numbers.
+
+REHEARSAL_SEASONS = {2026}
+
+
+def scorecard_label(season: int, mode: str) -> str:
+    """The label shown with a season's numbers, e.g. '2027 live: the real test'."""
+    if mode == "backtest":
+        return f"{season} backtest (in-sample: a pipeline check, not a test result)"
+    if season in REHEARSAL_SEASONS:
+        return f"{season} live REHEARSAL (rounds 20-23 only: small sample, not the resume metric)"
+    return f"{season} live: the real test (predictions frozen before each race)"
+
+
+def scorecards(conn: sqlite3.Connection) -> list[tuple[int, str]]:
+    """Every (season, mode) that has scored runs, live first, newest season first."""
+    rows = conn.execute(
+        "SELECT DISTINCT e.season, r.mode FROM scores s "
+        "JOIN prediction_runs r ON r.run_id = s.run_id JOIN events e ON e.event_id = r.event_id").fetchall()
+    return sorted(((r["season"], r["mode"]) for r in rows),
+                  key=lambda sm: (sm[1] != "live", sm[0] in REHEARSAL_SEASONS, -sm[0]))

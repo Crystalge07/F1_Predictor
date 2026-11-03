@@ -23,7 +23,8 @@ The actions, in the order a weekend produces them:
     predict         a live prediction for a stage, once its inputs are in and
                     before its cutoff (features/as_of.stage_cutoff)
     score           a race's logged runs, once the result is in
-    missed          informational: a stage's cutoff passed with no live run.
+    missed          informational: a stage's cutoff passed with no live run,
+                    after live predicting started (the first live run).
                     Nothing is done about it: a "live" prediction made after
                     its cutoff wouldn't be honest (docs/evaluation-protocol.md).
 
@@ -166,6 +167,9 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
     """Everything due at `now` (a timezone-aware datetime), in a sensible order:
     fetches first (later steps need their data), then predictions, then scoring."""
     actions: list[Action] = []
+    # When live predicting started: the first live run's creation time.
+    first_live = conn.execute("SELECT MIN(created_at_utc) FROM prediction_runs WHERE mode = 'live'").fetchone()[0]
+    live_since = parse_utc(first_live) if first_live else None
     for event in _events_near(conn, now):
         event_id, season, rnd = event["event_id"], event["season"], event["round"]
         starts = _sessions(conn, event_id)
@@ -213,7 +217,11 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             if _live_run_exists(conn, event_id, stage):
                 continue
             if now >= cutoff:
-                act("missed", stage, f"cutoff {to_utc_text(cutoff)} passed with no live run")
+                # Only a miss if the pipeline was already live then: races
+                # before the first live run ever (the backtested past) never
+                # had a live prediction to make.
+                if live_since is not None and cutoff > live_since:
+                    act("missed", stage, f"cutoff {to_utc_text(cutoff)} passed with no live run")
             elif ready:
                 act("predict", stage, why)
 

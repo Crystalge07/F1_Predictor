@@ -27,7 +27,7 @@ import argparse
 import time
 
 from f1predictor.db.connection import get_connection, init_db
-from f1predictor.evaluate.scorer import score_runs, summary
+from f1predictor.evaluate.scorer import scorecard_label, score_runs, summary
 from f1predictor.features.as_of import STAGES
 from f1predictor.predict.stage import model_version, predict_stage
 
@@ -67,8 +67,8 @@ def delete_backtest_runs(conn, event_ids: list[int]) -> int:
     return cursor.rowcount
 
 
-def print_summary(conn, season: int, label: str, rounds=None) -> None:
-    table = summary(conn, season, rounds=rounds)
+def print_summary(conn, season: int, label: str, rounds=None, mode: str = "backtest") -> None:
+    table = summary(conn, season, mode=mode, rounds=rounds)
     if table.empty:
         print(f"\n{label}: nothing scored")
         return
@@ -129,13 +129,17 @@ def main() -> None:
             scored = score_runs(conn, run_ids)
             print(f"  {len(scored)} of {len(run_ids)} runs scored")
 
-        label = f"{args.season} backtest (IN-SAMPLE: see docs/evaluation-protocol.md)"
+        label = scorecard_label(args.season, "backtest")
         print_summary(conn, args.season, label, rounds=tuple(args.rounds))
         if args.season == 2026 and tuple(args.rounds) == (1, 99):
             # The same split as the evaluation protocol, for comparison with
             # the frozen numbers (both parts are in-sample here).
             print_summary(conn, 2026, "2026 rounds 1-9 (the races that chose the settings)", rounds=(1, 9))
             print_summary(conn, 2026, "2026 rounds 10+ (held out, but looked at often)", rounds=(10, 99))
+        # Live runs of the same season, if any, as their own scorecard (never
+        # mixed with the backtest numbers above).
+        if not summary(conn, args.season, mode="live").empty:
+            print_summary(conn, args.season, scorecard_label(args.season, "live"), mode="live")
     finally:
         conn.close()
 

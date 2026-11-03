@@ -100,3 +100,19 @@ def test_summary_averages_per_stage_and_never_mixes_modes(conn, weekend):
     mae = table.loc["position_mae"]
     assert mae["improvement"] == pytest.approx((1.5 - mae["model"]) / 1.5)
     assert summary(conn, 2024, mode="live").set_index("metric").loc["position_mae", "races"] == 1
+
+
+def test_scorecard_labels_keep_rehearsal_backtest_and_real_test_apart():
+    from f1predictor.evaluate.scorer import scorecard_label
+    assert "REHEARSAL" in scorecard_label(2026, "live")
+    assert "not the resume metric" in scorecard_label(2026, "live")
+    assert "real test" in scorecard_label(2027, "live")
+    assert "in-sample" in scorecard_label(2026, "backtest")
+
+
+def test_scorecards_list_each_season_and_mode_separately(conn, weekend):
+    from f1predictor.evaluate.scorer import scorecards
+    runs = [predict_stage(conn, weekend["event"], "post_quali", mode=m, n_sims=N_SIMS)
+            for m in ("backtest", "live")]
+    score_runs(conn, runs)
+    assert scorecards(conn) == [(2024, "live"), (2024, "backtest")]   # live first

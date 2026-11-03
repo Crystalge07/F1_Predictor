@@ -2,7 +2,7 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. Phase 5 (automation) is in progress: the planner that works out what's due at any moment (fetch a session, predict a stage, score a race) is done; fetching, the tick itself, a simulated-weekend test and the GitHub Actions schedule are next.
+**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. 2026 rounds 20–23 are being predicted live as a rehearsal (own scorecard, not the resume metric). Phase 5 (automation) is in progress: the planner that works out what's due at any moment (fetch a session, predict a stage, score a race) is done; fetching, the tick itself, a simulated-weekend test and the GitHub Actions schedule are next.
 
 ## How it works
 
@@ -97,14 +97,23 @@ python scripts/replay_season.py --summary-only   # print the totals again
 
 Deletes the season's earlier backtest runs first, so it can be re-run (live runs can never be deleted).
 
-**4. Explain a prediction**
+**4. Predict a race live (by hand)**
+
+```bash
+python scripts/predict_event.py 2026 20 pre_weekend          # dry run: prints the prediction and its checks, logs nothing
+python scripts/predict_event.py 2026 20 pre_weekend --live   # logs it, only if it matches the dry run
+```
+
+Live runs can never be edited or deleted. 2026 rounds 20–23 are a live **rehearsal**, scored separately from the 2027 season (the real test).
+
+**5. Explain a prediction**
 
 ```bash
 python scripts/explain_race.py 2026 19                   # post-quali stage
 python scripts/explain_race.py 2026 19 --stage practice
 ```
 
-**5. Look at the results in a browser**
+**6. Look at the results in a browser**
 
 ```bash
 streamlit run app/dashboard.py

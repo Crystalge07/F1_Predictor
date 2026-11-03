@@ -87,6 +87,30 @@ probabilities and finishing order are mixed, and after qualifying the grid's
 win rates are still better than the model's. None of this is a test result
 (rounds 1–9 chose the settings), and no setting was changed in response to it.
 
+## 2026 live rehearsal (rounds 20–23)
+
+From 2026-11-03 the last four races of 2026 are predicted **live**, as a dress
+rehearsal for 2027: real predictions, logged before each cutoff and never
+edited, with the frozen settings.
+
+They are kept apart from everything else:
+
+* **Not the resume metric.** Four races is a tiny sample, and the settings
+  were chosen on 2026 data a few days earlier. The real test stays the 2027
+  live season.
+* **Own scorecard.** Every summary is per season *and* mode
+  (`evaluate/scorer.summary`), and is printed with its label
+  (`scorecard_label`): "2026 live REHEARSAL", "2027 live: the real test",
+  "2026 backtest (in-sample)". The dashboard shows each as its own table.
+  These are never added together.
+* **Rounds 1–19 have backtest runs only**, so rounds 20–23 have both a
+  backtest replay (if re-run) and live runs. They stay separate by mode.
+
+Live runs made by hand go through `scripts/predict_event.py`. A dry run is
+saved first, and `--live` refuses unless the new prediction is identical to
+the dry run, the cutoff hasn't passed, the stage has no live run yet and the
+code is a clean commit. A bad input can't be logged permanently by accident.
+
 ## Experiments tried on 2026-11-03 (separate branches, not merged)
 
 | Branch | Idea | Result |

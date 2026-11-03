@@ -178,3 +178,25 @@ if st.checkbox("Score every race this season (trains one model per race, takes a
     st.dataframe(summary.round(2), hide_index=True, width="stretch")
     st.write(f"Average MAE: model **{summary['Model MAE'].mean():.2f}**, "
              f"grid **{summary['Grid MAE'].mean():.2f}**")
+
+# --- Prediction log scorecards -------------------------------------------------
+# Scores of the LOGGED predictions (Phase 4 backtest, live runs from the
+# 2026 rehearsal on). Each season and mode is its own scorecard and they are
+# never added together: 2026 live is a rehearsal, 2027 live is the real test,
+# backtests are in-sample (evaluate/scorer.scorecard_label).
+from f1predictor.evaluate.scorer import scorecard_label, scorecards, summary  # noqa: E402
+
+st.header("Prediction log scorecards")
+log_conn = get_connection()
+try:
+    groups = scorecards(log_conn)
+    if not groups:
+        st.write("No scored predictions in the log yet.")
+    for log_season, log_mode in groups:
+        st.subheader(scorecard_label(log_season, log_mode))
+        table = summary(log_conn, log_season, mode=log_mode)
+        table = table[table["baseline"].notna()]            # the model-vs-baseline metrics
+        st.dataframe(table[["stage", "metric", "races", "model", "baseline", "baseline_name", "improvement"]]
+                     .round(4), hide_index=True, width="stretch")
+finally:
+    log_conn.close()

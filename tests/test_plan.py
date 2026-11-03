@@ -60,10 +60,10 @@ def add_result(c, session_id):
               "VALUES (?, 'a', 't', 1, '1')", (session_id,))
 
 
-def add_live_run(c, event_id, stage):
+def add_live_run(c, event_id, stage, created="2027-03-01T00:00:00Z"):
     return c.execute("INSERT INTO prediction_runs (event_id, stage, mode, as_of_utc, created_at_utc, "
-                     "model_version, settings_json) VALUES (?, ?, 'live', 'x', 'x', 'v', '{}')",
-                     (event_id, stage)).lastrowid
+                     "model_version, settings_json) VALUES (?, ?, 'live', 'x', ?, 'v', '{}')",
+                     (event_id, stage, created)).lastrowid
 
 
 def fetched(c, *items):
@@ -132,8 +132,10 @@ def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
     assert round2(conn, at("2027-03-14T09:00")) == [("predict", "post_quali")]
 
 
-def test_a_stage_whose_cutoff_passed_is_missed_not_predicted_late(conn):
-    # The pipeline was down all weekend: Sunday 16:00, nothing logged.
+def test_a_stage_whose_cutoff_passed_is_missed_not_predicted_late(conn, ids):
+    # Live since round 1. Then the pipeline was down all of round 2's
+    # weekend: Sunday 16:00, nothing logged for it.
+    add_live_run(conn, ids[1]["event"], "post_quali", created="2027-03-07T12:00:00Z")
     planned = round2(conn, at("2027-03-14T16:00"))
     assert ("missed", "pre_weekend") in planned and ("missed", "post_quali") in planned
     assert not any(kind == "predict" for kind, _ in planned)
@@ -168,3 +170,8 @@ def test_fetches_come_before_predictions(conn, ids):
     fetched(conn, "FP1", "FP2")
     kinds = [kind for kind, _ in round2(conn, at("2027-03-13T14:20"))]
     assert kinds == ["fetch_session", "predict"]
+
+
+def test_races_before_going_live_are_never_missed(conn):
+    # No live run has ever been made (e.g. the backtested past): nothing is "missed".
+    assert not any(a.kind == "missed" for a in plan(conn, at("2027-03-14T16:00")))
