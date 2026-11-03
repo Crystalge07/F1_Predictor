@@ -109,8 +109,8 @@ def test_practice_stage_last_call_with_a_missing_session(conn, ids):
     # not be blocked by it: at the last call, predict with what there is.
     add_live_run(conn, ids[2]["event"], "pre_weekend")
     fetched(conn, "FP1", "FP2")
-    assert round2(conn, at("2027-03-13T14:00")) == [("fetch_session", "FP3")]
-    assert round2(conn, at("2027-03-13T14:20")) == [("fetch_session", "FP3"), ("predict", "practice")]
+    assert round2(conn, at("2027-03-13T12:40")) == [("fetch_session", "FP3")]
+    assert round2(conn, at("2027-03-13T13:05")) == [("fetch_session", "FP3"), ("predict", "practice")]
 
 
 def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
@@ -127,7 +127,7 @@ def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
     # (but keep asking OpenF1 for the grid)...
     assert round2(conn, at("2027-03-14T09:00")) == [("fetch_session", "grid")]
     # ...until the last call (falls back to qualifying order)...
-    assert round2(conn, at("2027-03-14T14:20")) == [("fetch_session", "grid"), ("predict", "post_quali")]
+    assert round2(conn, at("2027-03-14T13:05")) == [("fetch_session", "grid"), ("predict", "post_quali")]
     # ...or until the grid arrives.
     fetched(conn, "grid")
     assert round2(conn, at("2027-03-14T09:00")) == [("predict", "post_quali")]
@@ -169,7 +169,7 @@ def test_fetches_come_before_predictions(conn, ids):
     # Both due at once: the practice prediction needs FP3's data, so fetching goes first.
     add_live_run(conn, ids[2]["event"], "pre_weekend")
     fetched(conn, "FP1", "FP2")
-    kinds = [kind for kind, _ in round2(conn, at("2027-03-13T14:20"))]
+    kinds = [kind for kind, _ in round2(conn, at("2027-03-13T13:05"))]
     assert kinds == ["fetch_session", "predict"]
 
 
@@ -197,3 +197,20 @@ def test_a_session_that_never_arrives_is_given_up_after_a_day(conn, ids):
     # FP1 ready at 13:30 Friday; still nothing on Saturday 14:00.
     planned = round2(conn, at("2027-03-13T14:00"))
     assert ("gave_up", "FP1") in planned and ("fetch_session", "FP1") not in planned
+
+
+def test_a_missing_season_calendar_is_fetched(conn):
+    # Our fixture only has 2027; on New Year's Day 2028 the planner asks for 2028's calendar.
+    planned = [(a.kind, a.season, a.target) for a in plan(conn, at("2028-01-01T09:00"))]
+    assert planned == [("fetch_jolpica", 2028, "schedule")]
+    assert not any(a.target == "schedule" for a in plan(conn, at("2027-03-08T09:00")))
+
+
+def test_jolpica_results_missing_two_days_are_late_but_still_fetched(conn, ids):
+    for stage in ("pre_weekend", "practice", "post_quali"):
+        add_live_run(conn, ids[2]["event"], stage)
+    fetched(conn, "FP1", "FP2", "FP3", "Q", "grid", "R")
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    planned = round2(conn, at("2027-03-16T18:00"))     # race over Sun 17:30; now Tue 18:00
+    assert ("fetch_jolpica", "results") in planned and ("late", "results") in planned

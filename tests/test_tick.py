@@ -90,11 +90,10 @@ def test_results_are_scored_by_the_tick(conn, weekend):
     assert report.scored and count(conn, "scores") > 0
 
 
-def test_fetch_failures_alert_once_a_day(conn, weekend, monkeypatch):
+def test_a_failed_fetch_is_reported_but_not_alerted(conn, weekend, monkeypatch):
+    # Data a few minutes late is normal: the next tick retries. Problems that
+    # last are alerted by the planner instead ('gave_up', 'late').
     monkeypatch.setattr(tick, "run_fetches", lambda conn, actions, now, j, o: {"2024-02-FP1": "failed"})
-    first = run(conn)
-    assert any("2024-02-FP1 failed" in m for m in first.new_alerts)
-    same_day = run(conn, now=MONDAY_BEFORE.replace(hour=15))
-    assert not any("FP1" in m for m in same_day.new_alerts)
-    next_day = run(conn, now=MONDAY_BEFORE.replace(day=12))
-    assert any("FP1" in m for m in next_day.new_alerts)
+    report = run(conn)
+    assert report.fetched == {"2024-02-FP1": "failed"}
+    assert not any("FP1" in m for m in report.new_alerts)

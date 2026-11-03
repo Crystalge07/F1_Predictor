@@ -20,10 +20,13 @@ The actions, in the order a weekend produces them:
     fetch_session   OpenF1 data for a session that has ended (+ FETCH_DELAY),
                     or (target 'grid') the starting grid once qualifying is in
     fetch_jolpica   Jolpica results/qualifying, once qualifying or the race
-                    has ended and its rows aren't in yet
+                    has ended and its rows aren't in yet; or the season's
+                    schedule, if the current year has no events yet
     predict         a live prediction for a stage, once its inputs are in and
                     before its cutoff (features/as_of.stage_cutoff)
     score           a race's logged runs, once the result is in
+    late            informational: Jolpica data still missing JOLPICA_LATE
+                    after it was due (still retried).
     gave_up         informational: a session's data still isn't in GIVE_UP
                     after it was ready; it's no longer retried.
     missed          informational: a stage's cutoff passed with no live run,
@@ -36,10 +39,10 @@ When is each stage due? (all times UTC, from the calendar)
     pre_weekend  the previous race's result is in (round 1: within
                  PRE_SEASON_WINDOW of FP1), and the first session hasn't started.
     practice     every session before qualifying has been fetched, OR it's
-                 LAST_CALL before qualifying (predict with whatever practice
+                 within LAST_CALL (2h) of qualifying (predict with whatever practice
                  data exists: a cancelled or broken session mustn't block it).
     post_quali   qualifying results are in, AND either OpenF1's starting grid
-                 is in or it's LAST_CALL before the race (then the predictor
+                 is in or it's within LAST_CALL of the race (then the predictor
                  falls back to qualifying order, see features/as_of.py).
 """
 
@@ -61,7 +64,14 @@ SESSION_LENGTH = {
 # little time to finish publishing a session.
 FETCH_DELAY = timedelta(minutes=30)
 # How close to a cutoff a stage is predicted with whatever data exists.
-LAST_CALL = timedelta(minutes=45)
+# Must be comfortably longer than the gap between ticks: the scheduler ticks
+# hourly and GitHub Actions can start a scheduled job 10-30 minutes late, so
+# 2 hours gives at least two ticks a chance. (45 minutes looked fine, but the
+# simulated-weekend test showed an on-the-hour tick could never land in it.)
+LAST_CALL = timedelta(hours=2)
+# Jolpica results usually appear within hours, occasionally days. Past this,
+# the planner keeps retrying but also reports the part as 'late' (an alert).
+JOLPICA_LATE = timedelta(hours=48)
 # How long to keep retrying a session's OpenF1 data after it should have
 # been ready. Practice stages don't wait for it anyway (LAST_CALL); this just
 # stops a session OpenF1 never publishes from being retried for days.
@@ -78,7 +88,7 @@ LOOK_AHEAD = timedelta(days=14)
 @dataclass(frozen=True)
 class Action:
     """One thing the tick should do. frozen=True: actions can't be changed after creation."""
-    kind: str                    # 'fetch_session', 'fetch_jolpica', 'predict', 'score', 'gave_up', 'missed'
+    kind: str                    # 'fetch_session', 'fetch_jolpica', 'predict', 'score', 'late', 'gave_up', 'missed'
     event_id: int
     season: int
     round: int
@@ -177,6 +187,15 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
     # When live predicting started: the first live run's creation time.
     first_live = conn.execute("SELECT MIN(created_at_utc) FROM prediction_runs WHERE mode = 'live'").fetchone()[0]
     live_since = parse_utc(first_live) if first_live else None
+
+    # A new season's calendar: nothing else can be planned without it. Once
+    # it's in, Jolpica refreshes it with every results fetch, and OpenF1
+    # updates exact session times on every fetch, so this only fires when
+    # the current year has no events at all (e.g. the first ticks of January).
+    season_now = now.year
+    if not conn.execute("SELECT 1 FROM events WHERE season = ?", (season_now,)).fetchone():
+        actions.append(Action("fetch_jolpica", 0, season_now, 0, "schedule",
+                              f"no {season_now} calendar in the database yet"))
     for event in _events_near(conn, now):
         event_id, season, rnd = event["event_id"], event["season"], event["round"]
         starts = _sessions(conn, event_id)
@@ -210,6 +229,9 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
                 ready_at = starts[session_type] + SESSION_LENGTH[session_type] + FETCH_DELAY
                 if now >= ready_at and not _has_rows(conn, table, event_id, session_type):
                     act("fetch_jolpica", part, f"{session_type} ended; Jolpica {part} not in yet")
+                    if now >= ready_at + JOLPICA_LATE:
+                        act("late", part, f"Jolpica {part} still missing "
+                                          f"{JOLPICA_LATE.total_seconds() / 3600:.0f}h after {session_type}; still retrying")
 
         # --- Predicting -------------------------------------------------------
         # (stage, cutoff, are its inputs in?, explanation)
@@ -251,6 +273,6 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             if unscored:
                 act("score", "race", f"result is in; {unscored} logged run(s) not scored")
 
-    order = {"fetch_session": 0, "fetch_jolpica": 1, "predict": 2, "score": 3, "gave_up": 4, "missed": 5}
+    order = {"fetch_session": 0, "fetch_jolpica": 1, "predict": 2, "score": 3, "late": 4, "gave_up": 5, "missed": 6}
     # sorted() is stable: within a kind, the calendar order above is kept.
     return sorted(actions, key=lambda a: order[a.kind])

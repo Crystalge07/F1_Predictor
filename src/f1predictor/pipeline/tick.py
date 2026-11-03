@@ -15,8 +15,9 @@ The scheduler runs this every hour (Phase 5, step 5). Each tick:
                 prediction is built and checked in memory, and only then written.
     3. SCORE    plan again, then score every race whose result is in.
     4. REPORT   record the tick in pipeline_ticks, and raise alerts for
-                problems: fetch failures, blocked predictions, sessions given
-                up on, stages missed. Each alert is raised once
+                problems that matter: blocked predictions, stages missed,
+                sessions given up on, Jolpica data late. (A single failed
+                fetch isn't one: data a few minutes late is normal.) Each alert is raised once
                 (pipeline_alerts); the tick returns how many are new, and the
                 command-line script exits with an error if there are any,
                 which is what makes GitHub Actions send an email.
@@ -90,13 +91,11 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
     conn.commit()
 
     # --- 1. Fetch ------------------------------------------------------------
+    # A failed fetch is NOT an alert by itself: data that's a few minutes
+    # late is normal, and the next tick retries. It shows in the report;
+    # problems that last are alerted by the planner ('gave_up', 'late'), and
+    # what really matters (a prediction blocked or missed) is alerted below.
     report.fetched = run_fetches(conn, plan(conn, now), now, jolpica_client, openf1_client)
-    for key, status in report.fetched.items():
-        if status == "failed":
-            # Keyed by DAY: a fetch that keeps failing is retried every tick,
-            # but alerts at most once a day.
-            report.alerts.append((f"fetch_failed:{key}:{report.now[:10]}",
-                                  f"fetch of {key} failed (retried every tick)"))
 
     # --- 2. Predict ----------------------------------------------------------
     for action in plan(conn, now):
@@ -133,7 +132,7 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
 
     # --- 4. Informational problems, then the alerts ------------------------------
     for action in plan(conn, now):
-        if action.kind in ("missed", "gave_up"):
+        if action.kind in ("missed", "gave_up", "late"):
             report.alerts.append((f"{action.kind}:{action.season}:{action.round}:{action.target}",
                                   f"{action.kind}: {_label(action)}: {action.reason}"))
     for key, message in report.alerts:
