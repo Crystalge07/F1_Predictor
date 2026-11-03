@@ -32,7 +32,7 @@ from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
 from f1predictor.models.baselines import add_baseline_ranks, grid_probabilities
 from f1predictor.models.dnf import add_dnf_probability
-from f1predictor.models.position import WEIGHT_2026, predict_positions, train_model
+from f1predictor.models.position import predict_positions, train_model
 from f1predictor.simulate.probabilities import race_probabilities, score_probabilities
 
 STAGES = {"pre_weekend": "champ_rank", "practice": "practice_rank"}
@@ -69,7 +69,7 @@ def main() -> None:
         columns = STAGE_FEATURES[stage]
 
         def trainer(history, columns=columns):
-            model = train_model(history, WEIGHT_2026, columns=columns)
+            model = train_model(history, columns=columns)
             return lambda race: predict_positions(model, race)
 
         print(f"=== {stage} (anchor: {anchor}) ===")

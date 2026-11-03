@@ -7,7 +7,7 @@ from f1predictor import settings
 
 def test_real_settings_file_has_every_section():
     s = settings.load()
-    assert {"weight_2026", "dnf", "probabilities"} <= set(s)
+    assert {"season_decay", "dnf", "probabilities"} <= set(s)
     assert set(s["probabilities"]) == {"pre_weekend", "practice", "post_quali"}
 
 

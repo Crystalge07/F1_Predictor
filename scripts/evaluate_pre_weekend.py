@@ -22,11 +22,11 @@ from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import PRE_WEEKEND_FEATURES
 from f1predictor.models.baselines import actual_result, championship_order, grid_order
-from f1predictor.models.position import WEIGHT_2026, predict_order, train_model
+from f1predictor.models.position import predict_order, train_model
 
 
 def pre_weekend_trainer(history: pd.DataFrame):
-    model = train_model(history, WEIGHT_2026, columns=PRE_WEEKEND_FEATURES)
+    model = train_model(history, columns=PRE_WEEKEND_FEATURES)
     return lambda race: predict_order(model, race)
 
 

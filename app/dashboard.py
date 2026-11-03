@@ -27,9 +27,9 @@ from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.metrics import score_race
 from f1predictor.features.race_features import build_race_features
 from f1predictor.models.baselines import actual_result, grid_order
-# WEIGHT_2026 comes from tuned_settings.json (via models/position.py), so a
-# re-tune updates the dashboard automatically.
-from f1predictor.models.position import WEIGHT_2026, predict_order, train_model
+# The season decay comes from tuned_settings.json (via models/position.py), so
+# a re-tune updates the dashboard automatically.
+from f1predictor.models.position import SEASON_DECAY, predict_order, train_model
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ def predict_race(session_id: int) -> dict:
     race = features[features["session_id"] == session_id]
     # Train ONLY on races strictly before this one (same rule as walk_forward.py).
     history = features[features["race_date"] < race["race_date"].iloc[0]]
-    model = train_model(history, WEIGHT_2026)
+    model = train_model(history)
 
     conn = get_connection()
     try:
@@ -98,7 +98,7 @@ def predict_race(session_id: int) -> dict:
 
 st.set_page_config(page_title="F1 Predictor", layout="wide")
 st.title("F1 Predictor: predictions vs. results")
-st.caption(f"Post-qualifying XGBoost model, walk-forward (2026 weight = {WEIGHT_2026}), "
+st.caption(f"Post-qualifying XGBoost model, walk-forward (season decay = {SEASON_DECAY}), "
            "compared with predicting the starting grid.")
 
 features = load_features()

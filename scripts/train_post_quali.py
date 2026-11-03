@@ -1,16 +1,16 @@
-"""Train the post-qualifying XGBoost model, tune the 2026 weight, check the Phase 2 gate.
+"""Train the post-qualifying XGBoost model, check it against the grid, save it.
 
 Usage (from the repo root, with the virtual environment active):
     python scripts/train_post_quali.py
 
-The races are split into three groups, so that no number we report was used
-to make a choice (that would flatter the model):
+Held-out races (no setting is chosen here; the season decay comes from
+tuned_settings.json, chosen by scripts/tune_recency.py on other races):
 
-    TUNE   2026 rounds 1-9    pick the 2026 weight multiplier here
-    GATE   2026 rounds 10+    untouched until the very end: the held-out test
-    CHECK  2025 (all rounds)  a second, independent check on a whole season of
-                              the old regulations (the 2026 weight can't
-                              affect it: there are no 2026 rows before 2025 races)
+    GATE   2026 rounds 10+
+    CHECK  2025 (all rounds)
+
+(Until 2026-11-03 this script also tuned a "2026 counts N times" weight on
+2026 rounds 1-9; recency weighting replaced it.)
 
 Every race is predicted walk-forward (trained only on the races before it),
 and scored against the grid-order baseline on exactly the same races.
@@ -19,25 +19,21 @@ Finally, the chosen model is retrained on ALL races and saved to
 data/models/post_quali.json for the next phases.
 """
 
-from f1predictor import config, settings
+from f1predictor import config
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.metrics import average_scores, score_race
 from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import POST_QUALI_FEATURES, build_race_features
 from f1predictor.models.baselines import actual_result, grid_order
-from f1predictor.models.position import predict_order, train_model
+from f1predictor.models.position import SEASON_DECAY, predict_order, train_model
 
-# Candidate 2026 multipliers. 1 = no extra weight (2026 counts like any season).
-WEIGHT_CANDIDATES = [1, 2, 3, 5, 8, 12]
-LAST_TUNING_ROUND = 9
+LAST_TUNING_ROUND = 9   # 2026 rounds up to here are calibration races elsewhere
 
 
-def xgb_trainer(weight_2026: float):
+def trainer(history):
     """A walk-forward trainer: fit on the history, return a race -> order function."""
-    def trainer(history):
-        model = train_model(history, weight_2026)
-        return lambda race: predict_order(model, race)
-    return trainer
+    model = train_model(history)
+    return lambda race: predict_order(model, race)
 
 
 def score(predictions: dict[int, list[str]], actuals: dict[int, dict[str, int]]) -> dict[str, float]:
@@ -63,13 +59,12 @@ def main() -> None:
         # Race lists for each group, in date order.
         races = (features[["session_id", "season", "round", "race_date"]]
                  .drop_duplicates().sort_values("race_date"))
-        tune = races[(races.season == 2026) & (races["round"] <= LAST_TUNING_ROUND)].session_id.tolist()
         gate = races[(races.season == 2026) & (races["round"] > LAST_TUNING_ROUND)].session_id.tolist()
         check = races[races.season == 2025].session_id.tolist()
 
         # Real results and the baseline's predictions, from the same functions
         # that produced the Phase 2 baseline numbers.
-        all_test = tune + gate + check
+        all_test = gate + check
         actuals = {s: actual_result(conn, s) for s in all_test}
         baseline = {s: grid_order(conn, s) for s in all_test}
     finally:
@@ -78,22 +73,9 @@ def main() -> None:
     def baseline_on(sessions):
         return score({s: baseline[s] for s in sessions}, actuals)
 
-    # --- 1. Tune the 2026 weight on TUNE races only -----------------------------
-    print(f"Tuning the 2026 weight on 2026 rounds 1-{LAST_TUNING_ROUND} "
-          f"(grid baseline MAE {baseline_on(tune)['position_mae']:.2f})")
-    results = {}
-    for weight in WEIGHT_CANDIDATES:
-        results[weight] = score(walk_forward(features, tune, xgb_trainer(weight)), actuals)
-        print(f"  weight {weight:>2}:  MAE {results[weight]['position_mae']:.3f}  "
-              f"spearman {results[weight]['spearman']:.3f}")
-    # Lowest MAE wins; on an exact tie, min() keeps the first (smallest) weight.
-    best_weight = min(WEIGHT_CANDIDATES, key=lambda w: results[w]["position_mae"])
-    print(f"  -> chosen 2026 weight: {best_weight}")
-    settings.save(["weight_2026"], float(best_weight))
-    print(f"     saved to tuned_settings.json (review the change with `git diff src/f1predictor/tuned_settings.json`)")
+    print(f"Post-quali model, season decay {SEASON_DECAY} (from tuned_settings.json)")
 
-    # --- 2. The gate: held-out races, scored once -------------------------------
-    trainer = xgb_trainer(best_weight)
+    # --- 1. Held-out races --------------------------------------------------------
     gate_model = score(walk_forward(features, gate, trainer), actuals)
     check_model = score(walk_forward(features, check, trainer), actuals)
     print_comparison(f"GATE: 2026 rounds {LAST_TUNING_ROUND + 1}+", gate_model, baseline_on(gate), len(gate))
@@ -108,12 +90,12 @@ def main() -> None:
         verdict = "ahead of" if diff > 0 else "behind"
         print(f"{label}: model is {abs(diff):.2f} places per driver {verdict} the grid")
 
-    # --- 3. Final model on everything, saved for later phases -------------------
-    final = train_model(features, best_weight)
+    # --- 2. Final model on everything, saved for later phases -------------------
+    final = train_model(features)
     config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
     path = config.MODELS_DIR / "post_quali.json"
     final.save_model(path)
-    print(f"\nSaved final model (2026 weight {best_weight}) to {path}")
+    print(f"\nSaved final model (season decay {SEASON_DECAY}) to {path}")
 
     # Which features the model leans on most ("gain" = how much a feature's
     # splits improved the predictions, as a share of the total).

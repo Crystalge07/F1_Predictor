@@ -32,7 +32,7 @@ from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import build_race_features
 from f1predictor.models.baselines import grid_probabilities
 from f1predictor.models.dnf import add_dnf_probability
-from f1predictor.models.position import WEIGHT_2026, predict_positions, train_model
+from f1predictor.models.position import predict_positions, train_model
 from f1predictor.simulate.probabilities import race_probabilities, score_probabilities
 
 import pandas as pd
@@ -44,7 +44,7 @@ LAST_CALIBRATION_ROUND_2026 = 9
 
 def position_trainer(history: pd.DataFrame):
     """Walk-forward trainer that returns expected positions (not just an order)."""
-    model = train_model(history, WEIGHT_2026)
+    model = train_model(history)
     return lambda race: predict_positions(model, race)
 
 

@@ -16,7 +16,7 @@ from f1predictor.db.connection import get_connection
 from f1predictor.explain.contributions import explain_race, top_reasons
 from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
-from f1predictor.models.position import WEIGHT_2026, train_model
+from f1predictor.models.position import train_model
 
 
 def main() -> None:
@@ -38,7 +38,7 @@ def main() -> None:
         raise SystemExit(f"No race with results for {args.season} round {args.round}")
     history = features[features.race_date < race.race_date.iloc[0]]
 
-    model = train_model(history, WEIGHT_2026, columns=STAGE_FEATURES[args.stage])
+    model = train_model(history, columns=STAGE_FEATURES[args.stage])
     explanation = explain_race(model, race)
 
     # One row per driver, best predicted first.

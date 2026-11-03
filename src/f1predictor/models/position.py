@@ -9,10 +9,16 @@ How a race is predicted: score every driver in the race, then sort by the
 predicted position. The model never has to output exact integers 1..20: we
 only care about the ORDER, so predictions like 3.4, 3.9, 7.1 are fine.
 
-Sample weights (the 2026 decision from the PRD): every training row gets a
-weight; 2026 rows get `weight_2026` (e.g. 3.0 = each 2026 row counts like
-three older rows). 2026 is a regulation reset, so recent races should matter
-more. The multiplier is tuned in scripts/train_post_quali.py.
+Sample weights (recency): every training row gets a weight that shrinks with
+age, counted in seasons back from the newest season in the training data:
+
+    weight = SEASON_DECAY ** (newest season - row's season)
+
+With SEASON_DECAY 0.6: newest season 1.0, one season back 0.6, two back 0.36,
+five back ~0.08. Recent races matter more, which helps after a regulation
+reset like 2026, and the same rule keeps working for every future season.
+(It replaced a fixed "2026 counts 3x" multiplier on 2026-11-03; the decay is
+tuned by scripts/tune_recency.py.)
 """
 
 import pandas as pd
@@ -22,13 +28,9 @@ from f1predictor import settings
 
 from f1predictor.features.race_features import POST_QUALI_FEATURES
 
-# The first season of the new regulations, whose rows get the extra weight.
-REGULATION_RESET_SEASON = 2026
-
-# The 2026 multiplier, chosen by scripts/train_post_quali.py and stored in
-# tuned_settings.json (see settings.py). On 2026-11-02 every value from 1 to
-# 12 scored within 0.04 places, so it barely matters yet.
-WEIGHT_2026: float = settings.load()["weight_2026"]
+# How much each season back counts, relative to the one after it. Chosen by
+# scripts/tune_recency.py and stored in tuned_settings.json (see settings.py).
+SEASON_DECAY: float = settings.load()["season_decay"]
 
 # XGBoost settings. Deliberately conservative: we only have ~3,300 training
 # rows, and a big, deep model would memorise noise (overfit).
@@ -51,12 +53,18 @@ XGB_PARAMS = {
 }
 
 
-def sample_weights(train: pd.DataFrame, weight_2026: float) -> pd.Series:
-    """1.0 for every row, `weight_2026` for rows from the regulation-reset season onward."""
-    return (train["season"] >= REGULATION_RESET_SEASON).map({True: weight_2026, False: 1.0})
+def sample_weights(train: pd.DataFrame, season_decay: float) -> pd.Series:
+    """decay ** (seasons before the newest season in `train`): 1.0 for the newest.
+
+    "Newest" is taken from the training data itself, so in walk-forward each
+    model weights relative to the season it's about to predict (or the one
+    just before it, at round 1).
+    """
+    seasons_back = train["season"].max() - train["season"]
+    return season_decay ** seasons_back
 
 
-def train_model(train: pd.DataFrame, weight_2026: float = 1.0,
+def train_model(train: pd.DataFrame, season_decay: float = SEASON_DECAY,
                 columns: list[str] = POST_QUALI_FEATURES) -> xgb.XGBRegressor:
     """Fit the model on feature rows. Rows without a target (retirements) are dropped.
 
@@ -69,7 +77,7 @@ def train_model(train: pd.DataFrame, weight_2026: float = 1.0,
     model.fit(
         trainable[columns],
         trainable["finish_position"],
-        sample_weight=sample_weights(trainable, weight_2026),
+        sample_weight=sample_weights(trainable, season_decay),
     )
     return model
 

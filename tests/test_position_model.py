@@ -23,9 +23,12 @@ def fake_features(races: list[tuple[int, int, str]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_sample_weights_upweight_2026():
-    df = pd.DataFrame({"season": [2024, 2025, 2026]})
-    assert sample_weights(df, 3.0).tolist() == [1.0, 1.0, 3.0]
+def test_sample_weights_decay_by_season():
+    df = pd.DataFrame({"season": [2024, 2025, 2026, 2026]})
+    # Newest season (2026) = 1.0, one back = 0.5, two back = 0.25.
+    assert sample_weights(df, 0.5).tolist() == [0.25, 0.5, 1.0, 1.0]
+    # Decay 1.0 = no recency weighting.
+    assert sample_weights(df, 1.0).tolist() == [1.0, 1.0, 1.0, 1.0]
 
 
 def test_model_learns_grid_order():

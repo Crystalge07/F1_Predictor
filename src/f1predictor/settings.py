@@ -1,6 +1,6 @@
 """Tuned settings: every value an evaluation script chose, in one file.
 
-Before this, chosen values (the 2026 weight, DNF shrinkage, simulator noise...)
+Before this, chosen values (the season decay, DNF shrinkage, simulator noise...)
 were typed into the code by hand, sometimes in two places (the dashboard had
 its own copy of the 2026 weight). Now:
 
@@ -23,7 +23,7 @@ SETTINGS_PATH = Path(__file__).resolve().parent / "tuned_settings.json"
 
 
 def load(path: Path = SETTINGS_PATH) -> dict[str, Any]:
-    """All tuned settings as a dict, e.g. load()["weight_2026"] -> 3.0."""
+    """All tuned settings as a dict, e.g. load()["season_decay"] -> 0.6."""
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -31,7 +31,7 @@ def save(keys: list[str], value: Any, path: Path = SETTINGS_PATH) -> None:
     """Set one (possibly nested) setting and write the file back.
 
     keys is the path into the JSON, e.g.
-        save(["weight_2026"], 3.0)
+        save(["season_decay"], 0.6)
         save(["probabilities", "practice"], {"anchor_column": ..., ...})
     Everything else in the file is left as it was.
     """

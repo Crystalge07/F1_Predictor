@@ -24,13 +24,13 @@ from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import PRACTICE_FEATURES, PRE_WEEKEND_FEATURES
 from f1predictor.models.baselines import actual_result, championship_order, grid_order, practice_order
-from f1predictor.models.position import WEIGHT_2026, predict_order, train_model
+from f1predictor.models.position import predict_order, train_model
 
 
 def stage_trainer(columns: list[str]):
     """A walk-forward trainer for a model on the given feature list."""
     def trainer(history: pd.DataFrame):
-        model = train_model(history, WEIGHT_2026, columns=columns)
+        model = train_model(history, columns=columns)
         return lambda race: predict_order(model, race)
     return trainer
 

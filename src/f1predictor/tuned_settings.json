@@ -1,5 +1,5 @@
 {
-  "weight_2026": 3.0,
+  "season_decay": 0.6,
   "dnf": {
     "prior_strength": 80.0,
     "driver_weight": 0.5
@@ -12,12 +12,12 @@
     },
     "practice": {
       "anchor_column": "practice_rank",
-      "anchor_weight": 0.25,
+      "anchor_weight": 0.5,
       "noise_sd": 4.0
     },
     "post_quali": {
       "anchor_column": "grid",
-      "anchor_weight": 0.75,
+      "anchor_weight": 0.9,
       "noise_sd": 2.0
     }
   }
