@@ -34,9 +34,28 @@ from f1predictor.simulate.monte_carlo import N_SIMS, simulate_race
 GRID_WEIGHT = 0.75
 NOISE_SD = 2.0
 
+# Settings per stage: (anchor column, anchor weight, noise_sd). Post-quali is
+# the pair above; the other two were chosen by
+# scripts/evaluate_stage_probabilities.py on the same calibration races.
+# Before qualifying there's more uncertainty, so the noise is larger (4.0 vs
+# 2.0), and the anchor gets less weight because the baseline orders are much
+# weaker guides than the real grid.
+STAGE_SETTINGS = {
+    "pre_weekend": ("champ_rank", 0.5, 4.0),
+    "practice": ("practice_rank", 0.25, 4.0),
+    "post_quali": ("grid", GRID_WEIGHT, NOISE_SD),
+}
 
-def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT) -> pd.DataFrame:
+
+def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT,
+                    anchor_column: str = "grid") -> pd.DataFrame:
     """Replace expected_position with a grid/model blend, on a 1..N scale.
+
+    The "grid" can be any baseline order given as 1..N places in
+    `anchor_column`. Post-quali uses the real grid; stages before qualifying
+    have no grid, so they anchor on their own baseline order instead
+    (champ_rank or practice_rank, see models/baselines.add_baseline_ranks).
+    grid_weight is then the weight of that anchor.
 
     The model's raw numbers are turned into its predicted ORDER first
     (rank: lowest expected position -> 1), so both ingredients use the same
@@ -47,14 +66,14 @@ def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT) -> pd.
     gets 0.75 * 4 + 0.25 * 2 = 3.5.
     """
     model_order = race["expected_position"].rank(method="first")
-    return race.assign(expected_position=grid_weight * race["grid"] + (1 - grid_weight) * model_order)
+    return race.assign(expected_position=grid_weight * race[anchor_column] + (1 - grid_weight) * model_order)
 
 
 def race_probabilities(race: pd.DataFrame, noise_sd: float = NOISE_SD,
-                       grid_weight: float = GRID_WEIGHT,
+                       grid_weight: float = GRID_WEIGHT, anchor_column: str = "grid",
                        n_sims: int = N_SIMS, seed: int | None = 0) -> pd.DataFrame:
-    """Blend with the grid, simulate one race, and attach each driver's probabilities."""
-    race = blend_with_grid(race, grid_weight)
+    """Blend with the grid (or another anchor), simulate one race, and attach probabilities."""
+    race = blend_with_grid(race, grid_weight, anchor_column)
     result = simulate_race(
         race["driver_id"].tolist(),
         race["expected_position"].to_numpy(),

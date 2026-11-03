@@ -86,7 +86,7 @@ def grid_order(conn: sqlite3.Connection, session_id: int) -> list[str]:
     return [row["driver_id"] for row in sorted(rows, key=sort_key)]
 
 
-def grid_probabilities(history: pd.DataFrame, race: pd.DataFrame) -> pd.DataFrame:
+def grid_probabilities(history: pd.DataFrame, race: pd.DataFrame, slot_column: str = "grid") -> pd.DataFrame:
     """Grid-only probability baseline: P(win) and P(podium) from the starting slot alone.
 
     The probability version of grid_order. Each driver gets the share of past
@@ -102,13 +102,18 @@ def grid_probabilities(history: pd.DataFrame, race: pd.DataFrame) -> pd.DataFram
 
     A slot never seen in history (e.g. 23rd in a big field) gets 0. Returns the
     race rows with p_win and p_podium columns added.
+
+    slot_column: the same idea works for any baseline order. Pass "champ_rank"
+    (pre-weekend) or "practice_rank" (practice stage), from add_baseline_ranks.
+    History rows where the slot is unknown (NaN) are skipped.
     """
-    # Group past rows by grid slot; the mean of a True/False column is the
-    # share of True, i.e. the historical rate for that slot.
+    # Group past rows by slot; the mean of a True/False column is the share of
+    # True, i.e. the historical rate for that slot. groupby skips NaN slots.
     by_slot = history.assign(won=history["actual_position"] == 1,
                              podium=history["actual_position"] <= 3) \
-                     .groupby("grid")[["won", "podium"]].mean()
-    rates = race["grid"].map(by_slot["won"]).fillna(0.0), race["grid"].map(by_slot["podium"]).fillna(0.0)
+                     .groupby(slot_column)[["won", "podium"]].mean()
+    rates = (race[slot_column].map(by_slot["won"]).fillna(0.0),
+             race[slot_column].map(by_slot["podium"]).fillna(0.0))
     return race.assign(p_win=rates[0].values, p_podium=rates[1].values)
 
 
@@ -143,3 +148,25 @@ def practice_order(race: pd.DataFrame) -> list[str]:
         champ=race["driver_id"].map(champ_rank),
     ).sort_values(["no_lap", "short_run_gap_pct", "champ"])
     return ranked["driver_id"].tolist()
+
+
+def add_baseline_ranks(features: pd.DataFrame) -> pd.DataFrame:
+    """Add champ_rank and practice_rank: each driver's place (1..N) in the
+    championship-order and practice-order baselines for their race.
+
+    These act as the "grid" for stages before qualifying: the anchor of the
+    probability blend, and the slots of the slot-probability baseline.
+    practice_rank is NaN for races with no practice data at all (pre-2023),
+    so those races don't pollute the practice baseline's history.
+    """
+    parts = []
+    for _, race in features.groupby("session_id", sort=False):
+        champ = {d: i for i, d in enumerate(championship_order(race), start=1)}
+        race = race.assign(champ_rank=race["driver_id"].map(champ))
+        if race["short_run_gap_pct"].notna().any():
+            practice = {d: i for i, d in enumerate(practice_order(race), start=1)}
+            race = race.assign(practice_rank=race["driver_id"].map(practice).astype(float))
+        else:
+            race = race.assign(practice_rank=float("nan"))
+        parts.append(race)
+    return pd.concat(parts).loc[features.index]

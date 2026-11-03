@@ -152,7 +152,7 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 
 1. **Data foundation:** pull Jolpica (2018+) and OpenF1 (2023+) data into the database; backfill 2018–2026; write validation checks.
 2. **Baseline + first model:** grid-order baseline, then a post-qualifying XGBoost model with a time-based split. Original gate: it beats the baseline. **Outcome (2026-11-02): not met as written; gate redefined** (see Decisions made).
-3. **All stages + probabilities:** add pre-weekend and practice-stage models, the Monte Carlo step, and SHAP explanations.
+3. **All stages + probabilities:** add pre-weekend and practice-stage models, the Monte Carlo step, and SHAP explanations. **Done 2026-11-03:** probabilities at every stage beat their baselines on held-out races (see Decisions made).
 4. **Backtest:** replay the 2026 season race by race as if live, logging and scoring every prediction. This produces the first resume metric.
 5. **Automation:** scheduler, fetch retries, scorer, and retraining, all hands-off. Gate: a full simulated weekend runs with zero manual steps.
 6. **Dashboard + launch:** the four pages, deployed, live for the 2027 season.
@@ -179,6 +179,8 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 - **One model per stage (2026-11-03):** each stage (pre-weekend, practice, post-quali) has its own model and feature list (`features/stages.py`), all drawn from one feature table. Simpler to explain and test than one model with a stage feature.
 - **Pre-weekend stage (2026-11-03):** history + championship-standings features. Walk-forward over 2024–2026: 3.76 places MAE vs 3.83 for championship order (about 2% better; it wins in 2025 and 2026 and loses in 2024).
 - **Practice stage (2026-11-03):** pre-weekend features + practice long/short-run pace (sessions before qualifying, including 2024+ sprints). Walk-forward over 2024–2026: 3.71 places MAE vs 3.76 for the pre-weekend model and 3.83 for championship order. In 2026 alone, plain practice order (3.60) beats every model: after a regulation reset, practice is a better guide than history.
+- **Stage probabilities (2026-11-03):** pre-weekend and practice stages go through the same simulator, anchored on their own baseline order (championship order, practice order) instead of the grid, with more noise (4.0 places) because there's more uncertainty before qualifying. Held-out (2025 + 2026 rounds 10+) vs the slot baseline (historical rate for that place in the baseline order): pre-weekend win Brier +9.9%, podium +4.4%; practice win +7.5%, podium +15.6%. Settings in `simulate/probabilities.STAGE_SETTINGS`.
+- **Explanations (2026-11-03):** SHAP values from XGBoost's built-in `pred_contribs` (no `shap` dependency). They explain the position model; post-quali probabilities also include the grid blend, noise and DNF chances.
 - **Features (Phase 2):** computed on the fly into a DataFrame for now; the stored `features` table comes in Phase 4 with the prediction log.
 - **Drivers without a Jolpica id:** `session_entries` table with nullable driver/team ids (see Edge cases).
 
