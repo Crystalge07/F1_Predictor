@@ -178,8 +178,8 @@ def test_session_times_are_stored_in_utc(replay):
 
 
 def test_what_each_stage_knew_about_who_was_racing(replay):
-    # Ryo Hirakawa made his F1 debut here, for Haas, in place of Ocon. How
-    # much of that each stage could know:
+    # Ryo Hirakawa made his F1 debut here, for Haas (car 50), in place of
+    # Ocon. How much of that each stage could know:
     conn, _ = replay
     starters = {r[0] for r in conn.execute("SELECT driver_id FROM results WHERE session_id = ?",
                                            (r19_session_ids(conn)["R"],))}
@@ -192,9 +192,23 @@ def test_what_each_stage_knew_about_who_was_racing(replay):
     # Ocon instead of Hirakawa. (The open question: a hand-edited entry list.)
     assert starters - field("pre_weekend") == {"ryo_hirakawa"}
     assert field("pre_weekend") - starters == {"ocon"}
-    # practice: everyone except the debutant. Before qualifying, Jolpica
-    # doesn't know him yet, so there's no driver id to predict him under.
-    assert field("practice") == starters - {"ryo_hirakawa"}
+    # practice: the full real field. Before qualifying Jolpica doesn't know
+    # the debutant, so he has no driver id, but his car (50) was still
+    # driving in FP3, so he's predicted under a temporary id
+    # (features/provisional.py), with Haas as his team...
+    debutant = "provisional_2026_r19_car50"
+    assert field("practice") == starters - {"ryo_hirakawa"} | {debutant}
+    practice_run = runs(conn)[(19, "practice")]["run_id"]
+    assert conn.execute("SELECT constructor_id FROM predictions WHERE run_id = ? AND driver_id = ?",
+                        (practice_run, debutant)).fetchone()[0] == "haas"
+    # ...his FP1-FP3 laps count (he has a practice pace feature)...
+    pace = conn.execute("SELECT value FROM prediction_features WHERE run_id = ? AND driver_id = ? "
+                        "AND feature = 'short_run_gap_pct'", (practice_run, debutant)).fetchone()[0]
+    assert pace is not None
+    # ...and after the race he's scored as Hirakawa: nobody is missing.
+    missing = conn.execute("SELECT model_value FROM scores WHERE run_id = ? AND metric = 'lineup_missing'",
+                           (practice_run,)).fetchone()[0]
+    assert missing == 0
     # post_quali: the full real field, debutant included: matched through
     # this weekend's qualifying (ingest/openf1.match_entries, rule 3).
     assert field("post_quali") == starters and len(starters) == 22

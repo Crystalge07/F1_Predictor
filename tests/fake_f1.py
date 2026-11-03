@@ -33,6 +33,20 @@ Knobs that make things go wrong on purpose (all keyed by (season, round, X)):
                  laps and stints) or 'half_laps' (only the first half of the
                  laps). X = 'results': 'drop_two' (the last two finishers are
                  missing from Jolpica's race result).
+
+And one that isn't a fault, keyed by (season, round):
+
+    debutants    {(season, round): {seat: spec}}: a NEW driver takes seat `seat`
+                 (one of d01..d20: its team and its pace) for that weekend,
+                 under his own id and car number. spec keys:
+                     "id"        e.g. "n50" (code 'N50', a Jolpica id only
+                                 from his first qualifying/race result)
+                     "number"    his car number, e.g. 50
+                     "sessions"  which sessions he drives (default: all); the
+                                 seat's own driver drives the others. E.g.
+                                 {"FP1"}: a young driver's FP1 outing;
+                                 {"FP1", "FP2", "FP3"}: a practice stand-in.
+                     "team_name" False: OpenF1 doesn't give his team.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -105,13 +119,14 @@ def starting_grid(season: int, rnd: int) -> list[str]:
 class FakeF1:
     def __init__(self, now: datetime, broken: set | None = None, cancelled: set | None = None,
                  empty_until: dict | None = None, tamper: dict | None = None,
-                 sprint_rounds: set | None = None):
+                 sprint_rounds: set | None = None, debutants: dict | None = None):
         self.now = now
         self.broken = broken or set()
         self.cancelled = cancelled or set()
         self.empty_until = empty_until or {}
         self.tamper = tamper or {}
         self.sprint_rounds = sprint_rounds or set()
+        self.debutants = debutants or {}
         self.requests = 0
 
     # --- helpers ---------------------------------------------------------------
@@ -138,10 +153,25 @@ class FakeF1:
                         return season, rnd, session_type
         raise http_404()
 
-    @staticmethod
-    def _driver(d):
-        return {"driverId": d, "code": d.upper(), "permanentNumber": str(NUMBER[d]),
-                "givenName": "Test", "familyName": d.upper()}
+    def _debutant(self, season, rnd, session_type, seat):
+        """The debutant spec if a debutant drives `seat` in this session, else None."""
+        spec = self.debutants.get((season, rnd), {}).get(seat)
+        if spec and session_type in spec.get("sessions", ALL_SESSION_TYPES):
+            return spec
+        return None
+
+    def _who(self, season, rnd, session_type, seat):
+        """(driver id, car number) in `seat` for this session."""
+        spec = self._debutant(season, rnd, session_type, seat)
+        return (spec["id"], spec["number"]) if spec else (seat, NUMBER[seat])
+
+    def _driver(self, season, rnd, session_type, seat):
+        driver_id, number = self._who(season, rnd, session_type, seat)
+        return {"driverId": driver_id, "code": driver_id.upper(), "permanentNumber": str(number),
+                "givenName": "Test", "familyName": driver_id.upper()}
+
+    def _number(self, season, rnd, session_type, seat) -> int:
+        return self._who(season, rnd, session_type, seat)[1]
 
     @staticmethod
     def _constructor(d):
@@ -201,8 +231,8 @@ class FakeF1:
         finishers = order(season, rnd, salt=2)
         if self.tamper.get((season, rnd, "results")) == "drop_two":
             finishers = finishers[:-2]           # a partial result: last two rows lost
-        return [{"number": str(NUMBER[d]), "position": str(p), "positionText": str(p),
-                 "points": str(POINTS[p - 1] if p <= 10 else 0), "Driver": self._driver(d),
+        return [{"number": str(self._number(season, rnd, "R", d)), "position": str(p), "positionText": str(p),
+                 "points": str(POINTS[p - 1] if p <= 10 else 0), "Driver": self._driver(season, rnd, "R", d),
                  "Constructor": self._constructor(d), "grid": str(grid[d]), "laps": str(RACE_LAPS),
                  "status": "Finished", "Time": {"millis": str(5_400_000 + p * 1000)}}
                 for p, d in enumerate(finishers, start=1)]
@@ -210,14 +240,15 @@ class FakeF1:
     def _sprint_results(self, season, rnd):
         """A 10-lap sprint: grid = sprint qualifying order, its own finishing order."""
         grid = {d: i for i, d in enumerate(order(season, rnd, salt=len("SQ")), start=1)}
-        return [{"number": str(NUMBER[d]), "position": str(p), "positionText": str(p),
-                 "points": str(SPRINT_POINTS[p - 1] if p <= 8 else 0), "Driver": self._driver(d),
+        return [{"number": str(self._number(season, rnd, "S", d)), "position": str(p), "positionText": str(p),
+                 "points": str(SPRINT_POINTS[p - 1] if p <= 8 else 0), "Driver": self._driver(season, rnd, "S", d),
                  "Constructor": self._constructor(d), "grid": str(grid[d]), "laps": str(SPRINT_LAPS),
                  "status": "Finished", "Time": {"millis": str(1_800_000 + p * 1000)}}
                 for p, d in enumerate(order(season, rnd, salt=3), start=1)]
 
     def _qualifying(self, season, rnd):
-        return [{"number": str(NUMBER[d]), "position": str(p), "Driver": self._driver(d),
+        return [{"number": str(self._number(season, rnd, "Q", d)), "position": str(p),
+                 "Driver": self._driver(season, rnd, "Q", d),
                  "Constructor": self._constructor(d), "Q1": f"1:{20 + p * 0.1:06.3f}"}
                 for p, d in enumerate(order(season, rnd, salt=1), start=1)]
 
@@ -237,7 +268,7 @@ class FakeF1:
             if (session_type != "Q" or (season, rnd, "grid") in self.broken
                     or not self._published(season, rnd, "Q", GRID_DELAY)):
                 raise http_404()
-            return [{"driver_number": NUMBER[d], "position": p}
+            return [{"driver_number": self._number(season, rnd, "Q", d), "position": p}
                     for p, d in enumerate(starting_grid(season, rnd), start=1)]
         if (season, rnd, session_type) in self.broken or not self._published(season, rnd, session_type):
             raise http_404()                     # not published (yet, or ever)
@@ -245,9 +276,16 @@ class FakeF1:
         tamper = self.tamper.get((season, rnd, session_type))
         # 'drop_driver': d20 isn't in this session's data at all.
         drivers = DRIVERS[:-1] if tamper == "drop_driver" else DRIVERS
+        car = {d: self._number(season, rnd, session_type, d) for d in drivers}
         if endpoint == "drivers":
-            return [{"driver_number": NUMBER[d], "name_acronym": d.upper(), "full_name": d,
-                     "team_name": TEAM[d].upper()} for d in drivers]
+            out = []
+            for d in drivers:
+                driver_id, number = self._who(season, rnd, session_type, d)
+                spec = self._debutant(season, rnd, session_type, d) or {}
+                out.append({"driver_number": number, "name_acronym": driver_id.upper(),
+                            "full_name": f"Rookie {driver_id.upper()}" if spec else d,
+                            "team_name": None if spec.get("team_name") is False else TEAM[d].upper()})
+            return out
         n_laps = {"Q": 3, "SQ": 3, "R": RACE_LAPS, "S": SPRINT_LAPS}.get(session_type, 8)
         if endpoint == "laps" and self._late(season, rnd, session_type):
             return []                            # published, but no laps in it yet
@@ -256,14 +294,14 @@ class FakeF1:
         pace = {d: i for i, d in enumerate(order(season, rnd, salt=len(session_type)), start=1)}
         if endpoint == "laps":
             start = session_start(CALENDAR[season][rnd - 1], session_type)
-            return [{"driver_number": NUMBER[d], "lap_number": lap,
+            return [{"driver_number": car[d], "lap_number": lap,
                      "date_start": (start + timedelta(minutes=2 * lap)).isoformat(),
                      # Out-lap and in-lap slower; a clean run in between.
                      "lap_duration": 90 + pace[d] * 0.1 + (5 if lap in (1, n_laps) else lap * 0.02),
                      "is_pit_out_lap": lap == 1}
                     for d in drivers for lap in range(1, laps_served + 1)]
         if endpoint == "stints":
-            return [{"driver_number": NUMBER[d], "stint_number": 1, "compound": "MEDIUM",
+            return [{"driver_number": car[d], "stint_number": 1, "compound": "MEDIUM",
                      "lap_start": 1, "lap_end": n_laps, "tyre_age_at_start": 0} for d in drivers]
         if endpoint == "weather":
             return [{"date": session_start(CALENDAR[season][rnd - 1], session_type).isoformat(),

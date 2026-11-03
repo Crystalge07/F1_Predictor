@@ -191,12 +191,12 @@ def test_a_crash_while_scoring_is_alerted_and_finished_later(reference, monkeypa
     real_score_runs = tick.score_runs
     crashes = []
 
-    def crash_once(conn, run_ids):
+    def crash_once(conn, run_ids, unresolved=None):
         if not crashes:
             crashes.append(run_ids)
-            real_score_runs(conn, run_ids[:1])
+            real_score_runs(conn, run_ids[:1], unresolved)
             raise RuntimeError("simulated crash while scoring")
-        return real_score_runs(conn, run_ids)
+        return real_score_runs(conn, run_ids, unresolved)
 
     monkeypatch.setattr(tick, "score_runs", crash_once)
     conn, reports = run_week()

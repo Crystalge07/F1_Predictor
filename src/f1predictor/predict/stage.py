@@ -46,6 +46,7 @@ import pandas as pd
 from f1predictor import config, settings
 from f1predictor.explain.contributions import explain_race
 from f1predictor.features.as_of import prediction_rows
+from f1predictor.features.provisional import add_placeholder_drivers
 from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
 from f1predictor.models.baselines import add_baseline_ranks
@@ -213,6 +214,10 @@ def write_run(conn: sqlite3.Connection, prediction: StagePrediction, mode: str) 
              prediction.lineup_source, created, model_version(), settings_text(),
              prediction.n_training_races),
         ).lastrowid
+        # A debutant predicted under a temporary id needs a placeholder
+        # `drivers` row for the log's foreign key (features/provisional.py).
+        # Same transaction: no run, no placeholder.
+        add_placeholder_drivers(conn, prediction.event_id, prediction.drivers["driver_id"])
         # executemany runs the same INSERT once per tuple in the list.
         conn.executemany(
             "INSERT INTO predictions (run_id, driver_id, constructor_id, predicted_rank, "

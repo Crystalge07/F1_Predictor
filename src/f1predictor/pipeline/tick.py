@@ -161,8 +161,9 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
         run_ids = [r[0] for r in conn.execute(
             "SELECT run_id FROM prediction_runs r WHERE event_id = ? "
             "AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)", (action.event_id,))]
+        unresolved: dict[int, list[str]] = {}
         try:
-            scored = score_runs(conn, run_ids)
+            scored = score_runs(conn, run_ids, unresolved)
         except Exception as error:
             # Scoring must not crash the tick either (the alerts and the tick
             # record below still need to happen). Each run's scores are
@@ -174,6 +175,20 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
                                   f"score_failed: {action.season} R{action.round}: {error}; retried next tick"))
             continue
         report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s)")
+        # A debutant predicted under a temporary id who can't be identified
+        # (features/provisional.py): that run was left unscored, not scored
+        # wrongly or dropped. Alerted once per car; every tick tries again
+        # (e.g. once the car's match turns up), until the race is 10 days
+        # old and leaves the planner's window (pipeline/plan.LOOK_BACK).
+        for run_id, temporary_ids in unresolved.items():
+            for temporary_id in temporary_ids:
+                report.alerts.append((
+                    f"unresolved_driver:{action.season}:{action.round}:{temporary_id}",
+                    f"unresolved_driver: {action.season} R{action.round}: run {run_id} predicted "
+                    f"{temporary_id} (a driver with no id yet), and nobody in the result can be "
+                    "matched to that car, so the run is NOT scored. Check who drove it "
+                    "(session_entries / results car numbers); the run is scored on the next "
+                    "tick once the car matches one driver."))
 
     # --- 3b. Guardrail: is the live model falling behind its baseline? -----
     # Alert only (pipeline/drift.py). Runs every tick, but each alert names

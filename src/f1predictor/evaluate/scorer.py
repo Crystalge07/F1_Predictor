@@ -30,6 +30,13 @@ The driver list may not match the result: the run was made before the race
       did miss them, so it pays for that, and lineup_missing records it.
 Both the model and the baseline are treated this way, so the comparison is fair.
 
+Debutants predicted under a temporary id (features/provisional.py) are
+turned back into their real driver id first (provisional.resolve: the
+driver who started in that car), so the prediction is scored as made. If
+that can't be done, the run is NOT scored (UnresolvedDriverError) and the
+tick alerts: better no score than a score against the wrong person, and
+better an alert than a score silently missing.
+
 Scores can be rewritten: re-scoring a run (e.g. after the FIA changes a
 result) replaces its rows. The prediction being scored never changes.
 """
@@ -41,6 +48,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from f1predictor.evaluate.metrics import score_race
+from f1predictor.features.provisional import resolve
 from f1predictor.features.race_features import build_race_features
 from f1predictor.models.baselines import actual_result, add_baseline_ranks, grid_probabilities
 from f1predictor.models.dnf import brier
@@ -79,6 +87,34 @@ def logged_predictions(conn: sqlite3.Connection, run_id: int) -> pd.DataFrame:
         "SELECT driver_id, predicted_rank, anchor_position, p_win, p_podium "
         "FROM predictions WHERE run_id = ? ORDER BY predicted_rank",
         conn, params=(run_id,))
+
+
+class UnresolvedDriverError(ValueError):
+    """A run predicted a debutant under a temporary id that can't be turned
+    into a real driver: nobody started in that car, or the car points to
+    more than one driver, or to someone the run already predicted."""
+
+    def __init__(self, run_id: int, driver_ids: list[str]):
+        self.run_id, self.driver_ids = run_id, driver_ids
+        super().__init__(f"run {run_id}: can't tell who {', '.join(driver_ids)} was")
+
+
+def real_driver_ids(conn: sqlite3.Connection, run_id: int, event_id: int,
+                    logged: pd.DataFrame) -> pd.DataFrame:
+    """`logged` with every temporary id replaced by the real driver id.
+    Raises UnresolvedDriverError if any can't be (see the module docstring)."""
+    found = resolve(conn, event_id, logged["driver_id"])
+    if not found:
+        return logged                                   # no debutant: nothing to do
+    others = set(logged["driver_id"]) - set(found)
+    real = [r for r in found.values() if r is not None]
+    unresolved = sorted(
+        temporary for temporary, r in found.items()
+        # unknown; already predicted under his own id; or two cars -> one driver
+        if r is None or r in others or real.count(r) > 1)
+    if unresolved:
+        raise UnresolvedDriverError(run_id, unresolved)
+    return logged.assign(driver_id=logged["driver_id"].replace(found))
 
 
 # -----------------------------------------------------------------------------
@@ -128,7 +164,8 @@ def score_run(conn: sqlite3.Connection, run_id: int, history_table: pd.DataFrame
     actual = actual_result(conn, info["race_session_id"])
     if not actual:
         return None
-    logged = logged_predictions(conn, run_id)
+    # Debutants' temporary ids -> real ids (raises if that can't be done).
+    logged = real_driver_ids(conn, run_id, info["event_id"], logged_predictions(conn, run_id))
     baseline_name, slot_column = BASELINES[info["stage"]]
 
     # --- Finishing order: the model's ranks vs the anchor's order ------------
@@ -175,9 +212,15 @@ def score_run(conn: sqlite3.Connection, run_id: int, history_table: pd.DataFrame
     return results
 
 
-def score_runs(conn: sqlite3.Connection, run_ids: list[int] | None = None) -> dict[int, dict]:
+def score_runs(conn: sqlite3.Connection, run_ids: list[int] | None = None,
+               unresolved: dict[int, list[str]] | None = None) -> dict[int, dict]:
     """Score many runs (default: every logged run). Runs whose race has no
-    result yet are skipped. Returns {run_id: scores} for the runs scored."""
+    result yet are skipped. Returns {run_id: scores} for the runs scored.
+
+    A run with a debutant who can't be identified is skipped too (left
+    unscored, so it's tried again later) and, if `unresolved` is given,
+    recorded there as {run_id: [temporary ids]} for the caller to alert on.
+    The other runs are scored as usual."""
     if run_ids is None:
         run_ids = [r[0] for r in conn.execute("SELECT run_id FROM prediction_runs ORDER BY run_id")]
     if not run_ids:
@@ -185,7 +228,12 @@ def score_runs(conn: sqlite3.Connection, run_ids: list[int] | None = None) -> di
     history_table = add_baseline_ranks(build_race_features(conn))   # built once for all runs
     scored = {}
     for run_id in run_ids:
-        result = score_run(conn, run_id, history_table)
+        try:
+            result = score_run(conn, run_id, history_table)
+        except UnresolvedDriverError as error:
+            if unresolved is not None:
+                unresolved[run_id] = error.driver_ids
+            continue
         if result is not None:
             scored[run_id] = result
     return scored

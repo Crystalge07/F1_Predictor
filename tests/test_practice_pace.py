@@ -105,11 +105,36 @@ def test_sessions_after_qualifying_are_ignored(conn):
     assert pace_of(practice_pace(conn), "b")["long_run_gap_pct"] == pytest.approx(2.0)
 
 
-def test_unmatched_practice_drivers_are_skipped(conn):
+def add_fp1(conn, s):
+    """An FP1 session before the standard weekend's FP2 (same event)."""
+    event_id = conn.execute("SELECT event_id FROM sessions WHERE session_id = ?", (s["FP2"],)).fetchone()[0]
+    return conn.execute("INSERT INTO sessions (event_id, session_type, start_time_utc) "
+                        "VALUES (?, 'FP1', '2024-03-01T11:00:00Z')", (event_id,)).lastrowid
+
+
+def test_unmatched_fp1_only_drivers_are_skipped(conn):
     s = standard_weekend(conn)
-    # An FP1-style rookie we couldn't match to Jolpica: no driver_id.
-    add_stint(conn, s["FP2"], 99, None, 1, 1, [120_000] + [85_000] * 6 + [130_000])
+    # An FP1-only rookie we couldn't match to Jolpica: no driver_id, and
+    # he's gone by FP2 (the weekend's last session before qualifying), so
+    # he isn't in the race.
+    add_stint(conn, add_fp1(conn, s), 99, None, 1, 1, [120_000] + [85_000] * 6 + [130_000])
     pace = practice_pace(conn)
     assert set(pace["driver_id"]) == {"a", "b"}
     # The rookie's faster laps also don't become the reference "best car".
     assert pace_of(pace, "a")["long_run_gap_pct"] == 0.0
+
+
+def test_an_unmatched_car_in_the_last_session_is_a_debutant_and_his_laps_count(conn):
+    # Car 99 has no driver_id but is still driving in FP2, the last session
+    # before qualifying: a debutant in the race (features/provisional.py).
+    # ALL his laps of the weekend count, FP1 included, under his temporary
+    # id, so the practice prediction knows his pace.
+    s = standard_weekend(conn)
+    add_stint(conn, add_fp1(conn, s), 99, None, 1, 1, [120_000, 79_000, 130_000])   # FP1: best lap
+    add_stint(conn, s["FP2"], 99, None, 1, 1, [120_000] + [91_800] * 6 + [130_000])
+    pace = practice_pace(conn)
+    debutant = "provisional_2024_r01_car99"
+    assert set(pace["driver_id"]) == {"a", "b", debutant}
+    assert pace_of(pace, debutant)["long_run_gap_pct"] == pytest.approx(2.0)      # like b
+    assert pace_of(pace, debutant)["short_run_gap_pct"] == 0.0                    # his FP1 lap
+    assert pace_of(pace, "a")["short_run_gap_pct"] == pytest.approx(80_000 / 79_000 * 100 - 100)

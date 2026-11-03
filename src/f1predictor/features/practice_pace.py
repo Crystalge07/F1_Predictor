@@ -55,6 +55,8 @@ def load_pre_quali_laps(conn: sqlite3.Connection) -> pd.DataFrame:
             race.session_id   AS race_session_id,
             s.session_id,
             s.session_type,
+            s.event_id,
+            l.car_number,
             se.driver_id,
             l.lap_number,
             l.lap_time_ms,
@@ -75,11 +77,26 @@ def load_pre_quali_laps(conn: sqlite3.Connection) -> pd.DataFrame:
         WHERE s.session_type IN ('FP1', 'FP2', 'FP3', 'S')
           AND s.start_time_utc < q.start_time_utc   -- only what's known before qualifying
           AND l.lap_time_ms IS NOT NULL
-          -- Practice-only drivers we couldn't match have no driver_id; they
-          -- aren't in the race, so they can't get a feature row anyway.
-          AND se.driver_id IS NOT NULL
     """
-    return pd.read_sql_query(query, conn)
+    laps = pd.read_sql_query(query, conn)
+    # Cars we couldn't match to a driver (no driver_id) are of two kinds:
+    #   * debutants in the race (still driving in the last session before
+    #     qualifying): their laps count, under the temporary id the
+    #     prediction uses for them (features/provisional.py). Car numbers
+    #     are unique within a weekend, so all their sessions' laps are found;
+    #   * FP1-only drivers: not in the race, so they can't have a feature
+    #     row; their laps are dropped (as they always were).
+    # In history every race driver is matched, so this only changes live
+    # weekends with a debutant (2023-2026: no change).
+    from f1predictor.features.provisional import provisional_cars
+    debutants = provisional_cars(conn)[["event_id", "car_number", "driver_id"]].rename(
+        columns={"driver_id": "provisional_id"})
+    if not debutants.empty:     # (merging on an empty table trips over its column types)
+        laps = laps.merge(debutants.astype({"event_id": "int64", "car_number": "int64"}),
+                          on=["event_id", "car_number"], how="left")
+        laps["driver_id"] = laps["driver_id"].fillna(laps["provisional_id"])
+        laps = laps.drop(columns=["provisional_id"])
+    return laps[laps["driver_id"].notna()].drop(columns=["event_id", "car_number"])
 
 
 def _long_run_pace(laps: pd.DataFrame) -> pd.DataFrame:

@@ -154,7 +154,13 @@ def last_pre_quali_lineup(conn: sqlite3.Connection, info: dict) -> pd.DataFrame:
     drivers; by FP3 (or the sprint sessions) the race drivers are back.
     Empty if there's no such session with entries (e.g. before 2023, when
     there's no OpenF1 data).
+
+    Debutants: a car that ran in that session but can't be matched to a
+    driver yet (no Jolpica id before his first result) is in the race too.
+    It's added under a temporary id (features/provisional.py).
     """
+    from f1predictor.features.provisional import provisional_cars
+
     quali_start = info["starts"].get("Q")
     candidates = sorted(
         ((start, info["session_ids"][t]) for t, start in info["starts"].items()
@@ -169,6 +175,15 @@ def last_pre_quali_lineup(conn: sqlite3.Connection, info: dict) -> pd.DataFrame:
             "WHERE session_id = ? AND driver_id IS NOT NULL ORDER BY driver_id",
             conn, params=(session_id,))
         if not lineup.empty:
+            debutants = provisional_cars(conn, info["event_id"])
+            debutants = debutants[debutants["session_id"] == session_id]   # the same session
+            # Only with a known team: without one his DNF chance can't be
+            # computed, and that would block the WHOLE prediction. Left out,
+            # he's just missing, as before this rule existed.
+            debutants = debutants[debutants["constructor_id"].notna()]
+            if not debutants.empty:
+                lineup = pd.concat([lineup, debutants[["driver_id", "constructor_id"]]],
+                                   ignore_index=True)
             return lineup
     return pd.DataFrame(columns=["driver_id", "constructor_id"])
 
@@ -203,6 +218,9 @@ def grid_lineup(conn: sqlite3.Connection, info: dict) -> tuple[pd.DataFrame, str
     # missing data) still starts the race: put them at the back, in a fixed order.
     missing = last_pre_quali_lineup(conn, info)
     missing = missing[~missing["driver_id"].isin(grid["driver_id"])]
+    # Not a debutant's temporary id: by now he's in Jolpica's qualifying
+    # under his real id, and adding both would put him on the grid twice.
+    missing = missing[~missing["driver_id"].str.startswith("provisional_")]
     if not missing.empty:
         missing = missing.assign(grid=range(len(grid) + 1, len(grid) + 1 + len(missing)))
         grid = pd.concat([grid, missing], ignore_index=True)
