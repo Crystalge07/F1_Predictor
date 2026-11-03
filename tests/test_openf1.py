@@ -193,6 +193,72 @@ def test_match_entries_handles_regulars_rookies_and_fallbacks(conn):
     assert (matched, unmatched) == (2, 1)
 
 
+def add_qualifier(conn, quali_session_id: int, driver_id: str, code: str, constructor_id: str):
+    """A Jolpica qualifying row (which, unlike results, has no car number)."""
+    conn.execute("INSERT INTO drivers (driver_id, code, given_name, family_name) VALUES (?, ?, 'X', 'Y') "
+                 "ON CONFLICT DO NOTHING", (driver_id, code))
+    conn.execute("INSERT INTO constructors (constructor_id, name) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                 (constructor_id, constructor_id))
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, ?, ?, 1)", (quali_session_id, driver_id, constructor_id))
+
+
+def test_a_debutant_is_matched_from_this_events_qualifying(conn):
+    # Real case, Mexico City 2026: Hirakawa's first race. He has no race
+    # result anywhere yet, so the acronym rule (most recent RESULT) can't
+    # find him, and the post-quali prediction lost him. Jolpica's qualifying
+    # for this event already lists him: that's enough to match car 50.
+    event = add_event(conn, 2026, 19, "2026-11-01")
+    add_session(conn, event, "R")
+    quali = add_session(conn, event, "Q")
+    add_qualifier(conn, quali, "ryo_hirakawa", "HIR", "haas")
+    conn.execute("INSERT INTO session_entries (session_id, car_number, acronym, team_name) "
+                 "VALUES (?, 50, 'HIR', 'Haas F1 Team')", (quali,))
+
+    assert openf1.match_entries(conn, quali) == (1, 0)
+    row = conn.execute("SELECT driver_id, constructor_id FROM session_entries").fetchone()
+    # The team comes from his qualifying row (no result to take it from).
+    assert tuple(row) == ("ryo_hirakawa", "haas")
+
+
+def test_a_car_missing_from_the_driver_list_is_matched_from_the_same_weekend(conn):
+    # Real case, Mexico City 2026 FP3: OpenF1's /drivers left out car 30, but
+    # it set laps, so the loader made an entry with no acronym. Car 30 was
+    # matched in FP2 of the same weekend, and car numbers are unique within
+    # a weekend, so it's the same driver.
+    event = add_event(conn, 2026, 19, "2026-11-01")
+    add_session(conn, event, "R")
+    add_result(conn, add_session(conn, add_event(conn, 2026, 18, "2026-10-25"), "R"),
+               "lawson", "LAW", "rb", 30)                     # his latest team, from Austin
+    fp2, fp3 = add_session(conn, event, "FP2"), add_session(conn, event, "FP3")
+    conn.execute("INSERT INTO session_entries (session_id, car_number, acronym, team_name) "
+                 "VALUES (?, 30, 'LAW', 'Racing Bulls')", (fp2,))
+    conn.execute("INSERT INTO session_entries (session_id, car_number) VALUES (?, 30)", (fp3,))
+    openf1.match_entries(conn, fp2)
+
+    assert openf1.match_entries(conn, fp3) == (1, 0)
+    row = conn.execute("SELECT driver_id, constructor_id FROM session_entries WHERE session_id = ?",
+                       (fp3,)).fetchone()
+    assert tuple(row) == ("lawson", "rb")
+
+
+def test_a_nameless_car_is_not_matched_from_another_weekend(conn):
+    # The same car number at a DIFFERENT event says nothing: numbers can be
+    # reused (e.g. a reserve driver), so the rule stays within one weekend.
+    other = add_event(conn, 2026, 18, "2026-10-25")
+    add_session(conn, other, "R")
+    other_fp1 = add_session(conn, other, "FP1")
+    add_result(conn, add_session(conn, add_event(conn, 2026, 17, "2026-10-11"), "R"), "lawson", "LAW", "rb", 30)
+    conn.execute("INSERT INTO session_entries (session_id, car_number, acronym) VALUES (?, 30, 'LAW')",
+                 (other_fp1,))
+    openf1.match_entries(conn, other_fp1)
+    event = add_event(conn, 2026, 19, "2026-11-01")
+    add_session(conn, event, "R")
+    fp3 = add_session(conn, event, "FP3")
+    conn.execute("INSERT INTO session_entries (session_id, car_number) VALUES (?, 30)", (fp3,))
+    assert openf1.match_entries(conn, fp3) == (0, 1)
+
+
 # -----------------------------------------------------------------------------
 # Loading a session
 # -----------------------------------------------------------------------------

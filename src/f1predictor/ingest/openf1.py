@@ -316,11 +316,21 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
       Driver:
         1. Car number matches a race/sprint result at the SAME event
            (car numbers are unique within a weekend, so this is exact).
-        2. Otherwise, acronym matches a driver's code, using their most recent
-           result up to this season (covers practice before the race exists).
-        3. Otherwise NULL (e.g. an FP1 rookie who has never raced).
+        2. No acronym (OpenF1's /drivers left the car out, but it set laps):
+           the same car number's match in another session of this event.
+           Car numbers are unique within a weekend. (Real case: Lawson's
+           car 30 was missing from Mexico City 2026 FP3's driver list.)
+        3. Acronym matches the code of a driver in this event's Jolpica
+           QUALIFYING. Catches a debutant before their first race result
+           exists (real case: Hirakawa, Mexico City 2026), so the post-quali
+           prediction has them. Their team is the one they qualified for.
+        4. Acronym matches a driver's code, using their most recent result
+           up to this season (covers practice before the race exists).
+        5. Otherwise NULL (e.g. an FP1 rookie who has never raced, or a
+           debutant before qualifying: nobody knows their driver id yet).
       Team:
-        1. Same as driver rule 1 (the team in that result).
+        1. Same as driver rule 1 (the team in that result), or rule 3 (the
+           team in that qualifying result).
         2. Otherwise, a teammate in this session with the same OpenF1
            team_name who WAS matched by rule 1 (this gives rookies a team).
         3. Otherwise, the team from the driver's most recent result.
@@ -364,6 +374,44 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
             }
             continue
 
+        if not entry["acronym"]:
+            # Rule 2: the same car in another session of this weekend.
+            same_car = conn.execute(
+                """
+                SELECT se.driver_id FROM session_entries se
+                JOIN sessions s ON s.session_id = se.session_id
+                WHERE s.event_id = ? AND se.car_number = ? AND se.session_id <> ?
+                  AND se.driver_id IS NOT NULL
+                LIMIT 1
+                """,
+                (session["event_id"], entry["car_number"], session_id),
+            ).fetchone()
+            resolved[entry["car_number"]] = {
+                "driver_id": same_car["driver_id"] if same_car else None,
+                "constructor_id": None,  # decided in pass 2
+                "exact": False,
+            }
+            continue
+
+        # Rule 3: a driver who qualified at this event under this acronym.
+        qualified = conn.execute(
+            """
+            SELECT q.driver_id, q.constructor_id FROM qualifying q
+            JOIN drivers d ON d.driver_id = q.driver_id
+            JOIN sessions s ON s.session_id = q.session_id
+            WHERE s.event_id = ? AND d.code = ?
+            LIMIT 1
+            """,
+            (session["event_id"], entry["acronym"]),
+        ).fetchone()
+        if qualified is not None:
+            resolved[entry["car_number"]] = {
+                "driver_id": qualified["driver_id"],
+                "constructor_id": qualified["constructor_id"],
+                "exact": False,  # by acronym, so don't teach teammates from it
+            }
+            continue
+
         by_acronym = None
         if entry["acronym"]:
             # Acronyms are unique among a season's race drivers, and we take
@@ -398,7 +446,7 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
 
     for entry in entries:
         match = resolved[entry["car_number"]]
-        if match["exact"]:
+        if match["exact"] or match["constructor_id"] is not None:   # team already known
             continue
         constructor_id = team_by_name.get(entry["team_name"])   # teammate rule
         if constructor_id is None and match["driver_id"] is not None:
