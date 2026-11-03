@@ -245,6 +245,23 @@ def test_ingest_session_loads_rows_and_creates_missing_entries(conn):
     assert conn.execute("SELECT rainfall FROM weather").fetchone()[0] == 0   # False
 
 
+def test_phantom_cars_in_stints_are_dropped(conn):
+    # Real case (Austria 2025 qualifying): OpenF1 sent one stint each for car
+    # numbers that weren't in the session, with no laps and no driver info.
+    event_id = add_event(conn, 2024, 24, "2024-12-08")
+    race = add_session(conn, event_id, "R")
+    payload = session_payload()
+    payload[("stints", SESSION_KEY)].append(
+        {"driver_number": 7, "stint_number": 1, "compound": "SOFT",
+         "lap_start": 1, "lap_end": 1, "tyre_age_at_start": 0})
+
+    openf1.ingest_session(conn, FakeClient(payload), race, SESSION_KEY)
+
+    cars = [r[0] for r in conn.execute("SELECT car_number FROM session_entries ORDER BY 1")]
+    assert cars == [4, 99]      # no entry for phantom car 7
+    assert conn.execute("SELECT COUNT(*) FROM stints WHERE car_number = 7").fetchone()[0] == 0
+
+
 def test_ingest_session_is_idempotent(conn):
     event_id = add_event(conn, 2024, 24, "2024-12-08")
     race = add_session(conn, event_id, "R")

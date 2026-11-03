@@ -231,6 +231,10 @@ def check_openf1_session(conn: sqlite3.Connection, session_id: int) -> list[Issu
             FROM session_entries se
             JOIN results r ON r.session_id = se.session_id AND r.driver_id = se.driver_id
             WHERE se.session_id = ?
+              -- Disqualified drivers ('D') are recorded by Jolpica with 0 laps
+              -- even though they drove the whole race (e.g. Hamilton, Leclerc
+              -- and Gasly in China 2025), so their counts can't be compared.
+              AND r.position_text <> 'D'
             """, (session_id,)).fetchall()
 
         if per_driver:  # only when Jolpica's result is already loaded
@@ -252,9 +256,15 @@ def check_openf1_session(conn: sqlite3.Connection, session_id: int) -> list[Issu
 
     # --- Unmatched drivers: expected in practice (rookies), not in Q/S/R ---
     if session_type in ("Q", "SQ", "S", "R"):
+        # Only cars that actually set laps: an unmatched car with no laps
+        # can't affect any pace feature, so it isn't worth a warning.
         unmatched = [row["acronym"] or f"#{row['car_number']}" for row in conn.execute(
-            "SELECT acronym, car_number FROM session_entries "
-            "WHERE session_id = ? AND driver_id IS NULL", (session_id,))]
+            """
+            SELECT se.acronym, se.car_number FROM session_entries se
+            WHERE se.session_id = ? AND se.driver_id IS NULL
+              AND EXISTS (SELECT 1 FROM laps l
+                          WHERE l.session_id = se.session_id AND l.car_number = se.car_number)
+            """, (session_id,))]
         if unmatched:
             issues.append(Issue("unmatched_drivers", "warning",
                                 f"Not matched to a Jolpica driver: {unmatched}", session_id))

@@ -457,6 +457,21 @@ def ingest_session(
     weather = fetch(client, "weather", session_key=session_key)
     race_control = fetch(client, "race_control", session_key=session_key)
 
+    # Which cars really took part: listed in /drivers, or set at least one lap.
+    # OpenF1 occasionally sends stint/pit rows for car numbers that weren't in
+    # the session at all (found in the 2023-2026 backfill: 46 "phantom" cars
+    # with one stint, no laps and no name). Those rows are dropped here, so
+    # they never create fake session entries.
+    known_cars = {d["driver_number"] for d in drivers}
+    cars_with_laps = {lap["driver_number"] for lap in laps}
+    real_cars = known_cars | cars_with_laps          # | is set union
+    dropped = sum(1 for row in stints + pits if row["driver_number"] not in real_cars)
+    if dropped:
+        logger.info("Session %d: dropped %d stint/pit rows for cars not in the session",
+                    session_id, dropped)
+    stints = [s for s in stints if s["driver_number"] in real_cars]
+    pits = [p for p in pits if p["driver_number"] in real_cars]
+
     # `with conn:` = one transaction: commit if the block finishes, roll
     # back everything if any statement fails.
     with conn:
@@ -471,15 +486,14 @@ def ingest_session(
             [entry_row(session_id, d) for d in drivers],
         )
 
-        # Safety net: if laps/stints/pits mention a car that /drivers left
-        # out (a data gap), create a bare entry for it. Otherwise the foreign
-        # key would reject that car's rows and fail the whole session.
-        # A set comprehension: every distinct car number across the three lists.
-        cars_seen = {row["driver_number"] for row in laps + stints + pits}
+        # Safety net: a car that set laps but that /drivers left out (a data
+        # gap) gets a bare entry. Otherwise the foreign key would reject that
+        # car's laps and fail the whole session. (Phantom cars with no laps
+        # were already filtered out above.)
         conn.executemany(
             "INSERT INTO session_entries (session_id, car_number) VALUES (?, ?) "
             "ON CONFLICT (session_id, car_number) DO NOTHING",
-            [(session_id, car) for car in sorted(cars_seen)],
+            [(session_id, car) for car in sorted(cars_with_laps - known_cars)],
         )
 
         conn.executemany(

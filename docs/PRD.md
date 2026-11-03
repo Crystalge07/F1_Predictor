@@ -166,7 +166,8 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 
 **Decisions made**
 
-- **Seasons stored:** backfill 2018–2026 (2018 is the earliest season with lap-level timing). How many of those to *train* on is still open; storing more keeps that choice testable in Phase 2.
+- **Seasons stored:** backfill 2018–2026 (2018 is the earliest season with lap-level timing).
+- **Seasons trained on:** all of them, with 2026 (the new regulations) weighted more heavily via per-row sample weights. The exact 2026 multiplier is a hyperparameter, tuned with the time-based validation split in Phase 2.
 - **Lap data source:** OpenF1 (free, 2023+) instead of FastF1 (now needs a paid F1TV subscription).
 - **Database access:** raw standard SQL with `sqlite3`, no ORM, kept Postgres-compatible.
 - **Telemetry:** not stored; no planned feature needs it.
@@ -174,6 +175,5 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 
 **Open questions**
 
-- How many past seasons to train on, given the 2026 regulation reset?
 - One model per stage, or one model with a stage feature?
 - Streamlit to start, or straight to a React dashboard?

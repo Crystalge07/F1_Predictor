@@ -162,6 +162,21 @@ def test_retirement_lap_is_tolerated(conn):
     assert checks.check_openf1_session(conn, race) == []
 
 
+def test_disqualified_drivers_are_left_out_of_lap_count_check(conn):
+    # Real case (China 2025): a disqualified driver ran all 50 laps, but
+    # Jolpica records 0 laps completed for them.
+    race = make_race(conn, overrides={20: {"laps_completed": 0, "position_text": "D"}})
+    add_openf1_data(conn, race, laps_per_car=50)
+    assert checks.check_openf1_session(conn, race) == []
+
+
+def test_unmatched_car_without_laps_is_ignored(conn):
+    race = make_race(conn)
+    add_openf1_data(conn, race, laps_per_car=50)
+    conn.execute("INSERT INTO session_entries (session_id, car_number) VALUES (?, 236)", (race,))
+    assert checks.check_openf1_session(conn, race) == []
+
+
 def test_half_a_race_is_an_error(conn):
     race = make_race(conn)
     add_openf1_data(conn, race, laps_per_car=20)   # official result says 50 each
