@@ -66,6 +66,11 @@ jobs:
           gunzip --keep data/f1.sqlite.gz              # keep the .gz: it's the backup
           cp data/f1.sqlite data/f1.before.sqlite      # what the guard compares against
 
+      - name: Show the code version
+        # Live predictions are only logged from a clean commit (a version
+        # ending in -dirty would block them), so it's printed in every run.
+        run: python -c "from f1predictor.predict.stage import model_version; print('code version:', model_version())"
+
       - name: Tick
         id: tick
         run: |
