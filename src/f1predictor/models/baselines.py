@@ -110,3 +110,20 @@ def grid_probabilities(history: pd.DataFrame, race: pd.DataFrame) -> pd.DataFram
                      .groupby("grid")[["won", "podium"]].mean()
     rates = race["grid"].map(by_slot["won"]).fillna(0.0), race["grid"].map(by_slot["podium"]).fillna(0.0)
     return race.assign(p_win=rates[0].values, p_podium=rates[1].values)
+
+
+def championship_order(race: pd.DataFrame) -> list[str]:
+    """Pre-weekend baseline: predict the race finishes in championship order.
+
+    `race` is one race's rows from the feature table (needs the championship
+    columns, see features/championship.py). Sort key, best first:
+        1. driver's points so far this season
+        2. their team's points so far this season (separates drivers on 0)
+        3. driver's points last season (this is what decides round 1, when
+           everyone is on 0; rookies have none and go last)
+        4. driver_id, so the order is always the same
+    """
+    ranked = race.assign(prev=race["prev_season_points"].fillna(-1)).sort_values(
+        ["driver_season_points", "team_season_points", "prev", "driver_id"],
+        ascending=[False, False, False, True])
+    return ranked["driver_id"].tolist()

@@ -37,9 +37,13 @@ don't invent fake values for rookies or round 1):
     driver_track_finish      driver's avg finish at this circuit in past seasons
     team_track_finish        team's avg finish at this circuit in past seasons
 
-Also on every row, but NOT in FEATURE_COLUMNS (see the note there):
+Also on every row, but NOT in FEATURE_COLUMNS (used by other stages, see
+features/stages.py):
     long_run_gap_pct         practice race pace, % off the best car (2023+; see practice_pace.py)
     short_run_gap_pct        best practice lap, % off the fastest (2023+)
+    championship columns     points before the weekend (see championship.py)
+
+So this one table serves every stage; each stage's model just picks its columns.
 
 Known limitation (deliberately left for later): team rebrands get new ids in
 Jolpica ('alphatauri' -> 'rb', 'alfa' -> 'sauber', 'renault' -> 'alpine'...).
@@ -51,6 +55,7 @@ import sqlite3
 
 import pandas as pd
 
+from f1predictor.features.championship import CHAMPIONSHIP_COLUMNS, championship_features
 from f1predictor.features.practice_pace import PRACTICE_PACE_COLUMNS, practice_pace
 
 # The model's input columns, in a fixed order. The training code imports this
@@ -230,10 +235,12 @@ def build_post_quali_features(conn: sqlite3.Connection) -> pd.DataFrame:
     # Practice pace: left merge, so drivers with no practice laps (and every
     # race before 2023) simply get NaN.
     df = df.merge(practice_pace(conn), on=["session_id", "driver_id"], how="left")
+    # Championship standings before the weekend (used by the pre-weekend stage).
+    df = championship_features(conn, df)
 
     id_columns = ["session_id", "season", "round", "race_date", "circuit_id",
                   "driver_id", "constructor_id"]
-    return (df[id_columns + FEATURE_COLUMNS + PRACTICE_PACE_COLUMNS
+    return (df[id_columns + FEATURE_COLUMNS + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS
                + ["finish_position", "actual_position"]]
             .sort_values(["race_date", "session_id", "grid"])
             .reset_index(drop=True))

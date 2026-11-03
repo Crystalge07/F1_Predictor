@@ -176,10 +176,11 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 - **2026 sample weight:** 3 (tuned on 2026 rounds 1–9; every value from 1 to 12 scored within 0.04 places, so it barely matters yet).
 - **Practice pace:** long-run and short-run pace features exist (2023+) but are not used by the post-quali model, where they didn't help on validation. Kept for the pre-weekend and practice stages in Phase 3.
 - **Probabilities (Phase 3, 2026-11-03):** Monte Carlo (10,000 races) from a 75% grid / 25% model-order blend, Gaussian noise of 2.0 places, and per-driver DNF chances (driver + team history, heavily shrunk to the field rate; DNFs are mostly luck). Simulating straight from the model was 1.4% worse than the grid-slot baseline on the held-out races; the blend (chosen on calibration races only) is 0.6% better on win Brier and 4.9% better on podium Brier. Known weakness: still underconfident about clear favourites.
+- **One model per stage (2026-11-03):** each stage (pre-weekend, practice, post-quali) has its own model and feature list (`features/stages.py`), all drawn from one feature table. Simpler to explain and test than one model with a stage feature.
+- **Pre-weekend stage (2026-11-03):** history + championship-standings features. Walk-forward over 2024–2026: 3.76 places MAE vs 3.83 for championship order (about 2% better; it wins in 2025 and 2026 and loses in 2024).
 - **Features (Phase 2):** computed on the fly into a DataFrame for now; the stored `features` table comes in Phase 4 with the prediction log.
 - **Drivers without a Jolpica id:** `session_entries` table with nullable driver/team ids (see Edge cases).
 
 **Open questions**
 
-- One model per stage, or one model with a stage feature?
 - Streamlit to start, or straight to a React dashboard?

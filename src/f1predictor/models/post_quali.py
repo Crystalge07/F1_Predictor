@@ -53,12 +53,18 @@ def sample_weights(train: pd.DataFrame, weight_2026: float) -> pd.Series:
     return (train["season"] >= REGULATION_RESET_SEASON).map({True: weight_2026, False: 1.0})
 
 
-def train_model(train: pd.DataFrame, weight_2026: float = 1.0) -> xgb.XGBRegressor:
-    """Fit the model on feature rows. Rows without a target (retirements) are dropped."""
+def train_model(train: pd.DataFrame, weight_2026: float = 1.0,
+                columns: list[str] = FEATURE_COLUMNS) -> xgb.XGBRegressor:
+    """Fit the model on feature rows. Rows without a target (retirements) are dropped.
+
+    `columns` picks the features: the post-quali ones by default; other stages
+    pass their own list (features/stages.py). The model remembers which
+    columns it was trained on, so predicting needs no list.
+    """
     trainable = train[train["finish_position"].notna()]
     model = xgb.XGBRegressor(**XGB_PARAMS)
     model.fit(
-        trainable[FEATURE_COLUMNS],
+        trainable[columns],
         trainable["finish_position"],
         sample_weight=sample_weights(trainable, weight_2026),
     )
@@ -75,7 +81,9 @@ def predict_positions(model: xgb.XGBRegressor, race: pd.DataFrame) -> pd.DataFra
     raw numbers the Monte Carlo simulator starts from (e.g. 3.4 vs 3.9 means
     "slightly ahead"), not whole places.
     """
-    return race.assign(expected_position=model.predict(race[FEATURE_COLUMNS]))
+    # feature_names_in_: the columns the model was trained on, in that order.
+    columns = list(model.feature_names_in_)
+    return race.assign(expected_position=model.predict(race[columns]))
 
 
 def predict_order(model: xgb.XGBRegressor, race: pd.DataFrame) -> list[str]:
