@@ -1,5 +1,6 @@
 -- =============================================================================
--- schema.sql: every table in the F1 predictor database (Phase 1: raw data).
+-- schema.sql: every table in the F1 predictor database
+-- (Phase 1: raw data; Phase 4: the prediction log).
 --
 -- Two sources feed it:
 --   * Jolpica (2018+): calendar, race/sprint results, qualifying, drivers, teams
@@ -20,8 +21,8 @@
 --     existing database is safe and changes nothing. (It also means editing a
 --     table here does NOT change an existing database: rebuild it instead.)
 --
--- Phase 1 only stores raw facts. Features, predictions and scores get their
--- own tables in later phases.
+-- The raw-data tables store facts only. Predictions, the features they used,
+-- and their scores live in the prediction log section (Phase 4).
 -- =============================================================================
 
 
@@ -326,6 +327,172 @@ CREATE TABLE IF NOT EXISTS validation_issues (
     detail      TEXT NOT NULL,       -- human-readable explanation
     found_at    TIMESTAMP NOT NULL
 );
+
+
+-- -----------------------------------------------------------------------------
+-- Prediction log (Phase 4). The PRD's key piece: every prediction is written
+-- here, timestamped, BEFORE the race, and never edited afterwards, so the
+-- scorecard can't be fudged.
+--
+-- Four tables, from the outside in:
+--   prediction_runs      one row per "we predicted this weekend at this stage"
+--   predictions          one row per driver in a run: order + probabilities
+--   prediction_features  the exact inputs each driver's prediction used, with
+--                        their SHAP contributions (the PRD's "features" table)
+--   scores               after the race: each metric, model vs baseline
+-- -----------------------------------------------------------------------------
+
+-- One row per prediction run. A weekend gets several (pre-weekend, practice,
+-- post-quali), and live runs can repeat a stage (e.g. re-run after late data);
+-- the dashboard's odds timeline is just these runs in time order.
+CREATE TABLE IF NOT EXISTS prediction_runs (
+    run_id         INTEGER PRIMARY KEY,  -- auto-assigned (see note on events)
+    event_id       INTEGER NOT NULL REFERENCES events (event_id),
+    -- Which moment of the weekend this prediction is for (features/stages.py).
+    stage          TEXT NOT NULL
+                   CHECK (stage IN ('pre_weekend', 'practice', 'post_quali')),
+    -- 'backtest' = a replay of a past season (Phase 4, labelled in-sample);
+    -- 'live'     = made for real before the race (2027 onward).
+    -- Kept in one table so the scorer and dashboard treat both the same way,
+    -- but the scorecard must never mix them.
+    mode           TEXT NOT NULL CHECK (mode IN ('backtest', 'live')),
+    -- The information cutoff: the run may only use data from sessions that
+    -- had ENDED by this time. For a live run it's roughly created_at_utc; for
+    -- a backtest it's the moment being replayed (e.g. qualifying's end).
+    as_of_utc      TIMESTAMP NOT NULL,
+    -- When the row was actually written (wall-clock time, UTC).
+    created_at_utc TIMESTAMP NOT NULL,
+    -- Which code and settings produced it: the git commit, plus a short hash
+    -- of tuned_settings.json. Lets a later reader tell "the model changed"
+    -- apart from "the data changed".
+    model_version  TEXT NOT NULL,
+    -- A full copy of the tuned settings used (JSON text), so a run can be
+    -- understood even after the settings file has moved on.
+    settings_json  TEXT NOT NULL,
+    -- How many races the model was trained on: a quick sanity number.
+    n_training_races INTEGER
+);
+
+-- One row per driver per run: the prediction itself.
+CREATE TABLE IF NOT EXISTS predictions (
+    -- ON DELETE CASCADE: deleting a (backtest) run deletes its rows too.
+    -- Live runs can't be deleted at all (see the triggers below).
+    run_id            INTEGER NOT NULL REFERENCES prediction_runs (run_id) ON DELETE CASCADE,
+    driver_id         TEXT NOT NULL REFERENCES drivers (driver_id),
+    constructor_id    TEXT REFERENCES constructors (constructor_id),
+    -- 1..N: the predicted finishing order (what MAE / Spearman are scored on).
+    predicted_rank    INTEGER NOT NULL,
+    -- The anchor the simulator blends with: the grid slot after qualifying,
+    -- championship / practice order before it (simulate/probabilities.py).
+    anchor_position   REAL,
+    -- The position model's raw output ("finishes ~4.3 if they finish").
+    expected_position REAL,
+    -- Monte Carlo results (simulate/monte_carlo.py), each between 0 and 1.
+    p_win             REAL NOT NULL CHECK (p_win BETWEEN 0 AND 1),
+    p_podium          REAL NOT NULL CHECK (p_podium BETWEEN 0 AND 1),
+    p_points          REAL NOT NULL CHECK (p_points BETWEEN 0 AND 1),
+    p_dnf             REAL NOT NULL CHECK (p_dnf BETWEEN 0 AND 1),
+    mean_position     REAL,              -- average simulated finishing place
+
+    PRIMARY KEY (run_id, driver_id),
+    -- Two drivers can't share a predicted place within one run.
+    UNIQUE (run_id, predicted_rank)
+);
+
+-- The inputs behind each prediction, one row per driver per feature.
+--
+-- Why "long" (feature name as a column value) instead of one column per
+-- feature? Each stage uses a different feature list, and the list will
+-- change over time. Long format fits every stage in one table, and adding a
+-- feature never needs a schema change.
+CREATE TABLE IF NOT EXISTS prediction_features (
+    run_id       INTEGER NOT NULL REFERENCES prediction_runs (run_id) ON DELETE CASCADE,
+    driver_id    TEXT NOT NULL,
+    feature      TEXT NOT NULL,      -- column name, e.g. 'grid', 'driver_form_finish'
+    value        REAL,               -- NULL = unknown (e.g. a rookie's track history)
+    -- SHAP contribution in finishing places (explain/contributions.py):
+    -- negative = this feature moved the driver forward.
+    contribution REAL,
+
+    PRIMARY KEY (run_id, driver_id, feature),
+    -- The driver must have a prediction in this run.
+    FOREIGN KEY (run_id, driver_id) REFERENCES predictions (run_id, driver_id) ON DELETE CASCADE
+);
+
+-- One row per metric per run, written after the race by the scorer.
+-- Unlike predictions, scores MAY be rewritten: if the FIA changes a result
+-- after the race (a disqualification, a time penalty), the run is simply
+-- re-scored. The prediction being scored never changes.
+CREATE TABLE IF NOT EXISTS scores (
+    run_id         INTEGER NOT NULL REFERENCES prediction_runs (run_id) ON DELETE CASCADE,
+    -- 'position_mae', 'spearman', 'winner_hit', 'podium_hits' (evaluate/metrics.py),
+    -- 'brier_win', 'brier_podium' (simulate/probabilities.py)
+    metric         TEXT NOT NULL,
+    model_value    REAL NOT NULL,
+    -- The same metric for that stage's baseline (grid / championship /
+    -- practice order) on the same race, so "% better than baseline" is one query.
+    baseline_value REAL,
+    baseline_name  TEXT,             -- 'grid_order', 'championship_order', 'practice_order'
+    scored_at_utc  TIMESTAMP NOT NULL,
+
+    PRIMARY KEY (run_id, metric)
+);
+
+-- "Every run for this event", for the dashboard's per-weekend timeline.
+CREATE INDEX IF NOT EXISTS idx_runs_event ON prediction_runs (event_id, stage);
+
+-- The "never edited" rule, enforced by the database itself rather than by
+-- everyone remembering it. A trigger is code the database runs automatically
+-- when something happens to a table; RAISE(ABORT, ...) cancels the change.
+--
+-- SQLite-specific syntax. In Postgres the same rule would be a small trigger
+-- function (or simply REVOKE UPDATE, DELETE on these tables for the
+-- pipeline's database user).
+--
+--   * No logged prediction can ever be UPDATED, live or backtest.
+--   * LIVE runs can never be DELETED either.
+--   * BACKTEST runs can be deleted (and their rows go with them via
+--     ON DELETE CASCADE), so the 2026 replay can be re-run from scratch.
+CREATE TRIGGER IF NOT EXISTS prediction_runs_no_update
+BEFORE UPDATE ON prediction_runs
+BEGIN
+    SELECT RAISE(ABORT, 'prediction_runs are never edited');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prediction_runs_no_live_delete
+BEFORE DELETE ON prediction_runs
+WHEN OLD.mode = 'live'
+BEGIN
+    SELECT RAISE(ABORT, 'live prediction runs are never deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS predictions_no_update
+BEFORE UPDATE ON predictions
+BEGIN
+    SELECT RAISE(ABORT, 'predictions are never edited');
+END;
+
+-- Child rows check their parent run's mode: deleting a row of a live run is
+-- refused, while a backtest run's cascade delete goes through.
+CREATE TRIGGER IF NOT EXISTS predictions_no_live_delete
+BEFORE DELETE ON predictions
+WHEN (SELECT mode FROM prediction_runs WHERE run_id = OLD.run_id) = 'live'
+BEGIN
+    SELECT RAISE(ABORT, 'live predictions are never deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prediction_features_no_update
+BEFORE UPDATE ON prediction_features
+BEGIN
+    SELECT RAISE(ABORT, 'prediction_features are never edited');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prediction_features_no_live_delete
+BEFORE DELETE ON prediction_features
+WHEN (SELECT mode FROM prediction_runs WHERE run_id = OLD.run_id) = 'live'
+BEGIN
+    SELECT RAISE(ABORT, 'live prediction_features are never deleted');
+END;
 
 
 -- -----------------------------------------------------------------------------

@@ -8,8 +8,14 @@ grid_order: predict that the race finishes in starting-grid order.
     surprisingly strong: in this data the pole-sitter wins 38-68% of races
     depending on the season.
 
-(The PRD's second baseline, championship order for the pre-weekend stage,
-comes with the pre-weekend model in Phase 3.)
+championship_order: predict that the race finishes in championship order.
+    The PRD's baseline for the pre-weekend stage (added in Phase 3).
+
+practice_order: predict that the race finishes in order of best practice lap.
+    The baseline for the practice stage (added in Phase 3).
+
+grid_probabilities turns any of these orders into a probability baseline:
+each slot gets its historical win/podium rate.
 """
 
 import sqlite3
