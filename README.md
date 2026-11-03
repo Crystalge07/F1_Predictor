@@ -2,7 +2,7 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–3 done (data, models for every stage, win/podium probabilities, explanations). Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)). Next: Phase 4, replaying the 2026 season race by race with every prediction logged.
+**Status:** Phases 1–3 done (data, models for every stage, win/podium probabilities, explanations). Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)). Phase 4 (replaying the 2026 season race by race with every prediction logged) is in progress: the prediction log tables and strict as-of prediction rows are done (each stage only sees what was known at that moment, including the official starting grid from OpenF1 instead of the race result); predicting into the log, the scorer and the replay script are next.
 
 ## How it works
 
@@ -40,7 +40,7 @@ After qualifying, the starting grid is very hard to beat. Before qualifying, the
 
 ## Data
 
-[Jolpica-F1](https://github.com/jolpica/jolpica-f1) for calendar, results and qualifying (2018+); [OpenF1](https://openf1.org) for laps, stints, pit stops, weather and race control (2023+). Stored in SQLite, in standard SQL so it can move to Postgres.
+[Jolpica-F1](https://github.com/jolpica/jolpica-f1) for calendar, results and qualifying (2018+); [OpenF1](https://openf1.org) for laps, stints, pit stops, weather, race control and the official starting grid (2023+). Stored in SQLite, in standard SQL so it can move to Postgres.
 
 ## Setup
 
@@ -108,11 +108,12 @@ pytest
 ```
 src/f1predictor/
   config.py, settings.py     paths and constants; tuned settings (+ tuned_settings.json)
-  db/                        schema and connection
+  db/                        schema (raw data + the append-only prediction log) and connection
   ingest/                    Jolpica and OpenF1 loaders, backfill
   validate/                  data checks
   features/                  the race feature table: form, practice pace, championship,
-                             team lineages, and which features each stage may use
+                             team lineages, which features each stage may use, and
+                             as_of.py: prediction rows from only what was known at each stage
   models/                    baselines, the position model, DNF probabilities
   simulate/                  Monte Carlo simulator and race probabilities
   explain/                   SHAP contributions
