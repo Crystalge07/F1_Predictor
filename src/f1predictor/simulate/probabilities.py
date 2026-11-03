@@ -37,6 +37,9 @@ from f1predictor.simulate.monte_carlo import N_SIMS, simulate_race
 _post_quali = settings.load()["probabilities"]["post_quali"]
 GRID_WEIGHT: float = _post_quali["anchor_weight"]
 NOISE_SD: float = _post_quali["noise_sd"]
+# How much bigger the noise is in a race that's certainly wet. Chosen by
+# scripts/evaluate_wet_races.py (see wet_noise()).
+WET_NOISE_MULTIPLIER: float = settings.load()["wet_noise_multiplier"]
 
 # Settings per stage: (anchor column, anchor weight, noise_sd). Post-quali is
 # the pair above; the other two were chosen by
@@ -72,16 +75,33 @@ def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT,
     return race.assign(expected_position=grid_weight * race[anchor_column] + (1 - grid_weight) * model_order)
 
 
+def wet_noise(noise_sd: float, rain_prob: float, wet_multiplier: float = WET_NOISE_MULTIPLIER) -> float:
+    """Noise for a race with this chance of rain.
+
+    Wet races are more chaotic (mistakes, safety cars, strategy gambles), so
+    the noise grows with the chance of rain:
+        noise_sd * (1 + (wet_multiplier - 1) * rain_prob)
+    rain_prob 0 -> noise_sd unchanged; rain_prob 1 -> noise_sd * wet_multiplier;
+    50% chance -> halfway between.
+    """
+    return noise_sd * (1 + (wet_multiplier - 1) * rain_prob)
+
+
 def race_probabilities(race: pd.DataFrame, noise_sd: float = NOISE_SD,
                        grid_weight: float = GRID_WEIGHT, anchor_column: str = "grid",
+                       rain_prob: float = 0.0, wet_multiplier: float = WET_NOISE_MULTIPLIER,
                        n_sims: int = N_SIMS, seed: int | None = 0) -> pd.DataFrame:
-    """Blend with the grid (or another anchor), simulate one race, and attach probabilities."""
+    """Blend with the grid (or another anchor), simulate one race, and attach probabilities.
+
+    rain_prob: chance the race is wet (0..1). Defaults to 0 (dry), because no
+    forecast source is connected yet (Phase 5); see wet_noise().
+    """
     race = blend_with_grid(race, grid_weight, anchor_column)
     result = simulate_race(
         race["driver_id"].tolist(),
         race["expected_position"].to_numpy(),
         race["dnf_prob"].to_numpy(),
-        noise_sd=noise_sd,
+        noise_sd=wet_noise(noise_sd, rain_prob, wet_multiplier),
         n_sims=n_sims,
         seed=seed,
     )

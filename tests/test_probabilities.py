@@ -89,3 +89,10 @@ def test_add_baseline_ranks():
     assert out["champ_rank"].tolist() == [2, 1, 1, 2]
     assert out["practice_rank"].iloc[:2].tolist() == [1.0, 2.0]
     assert out["practice_rank"].iloc[2:].isna().all()
+
+
+def test_wet_noise():
+    from f1predictor.simulate.probabilities import wet_noise
+    assert wet_noise(2.0, rain_prob=0.0, wet_multiplier=2.0) == 2.0     # dry: unchanged
+    assert wet_noise(2.0, rain_prob=1.0, wet_multiplier=2.0) == 4.0     # certainly wet: doubled
+    assert wet_noise(2.0, rain_prob=0.5, wet_multiplier=2.0) == 3.0     # 50%: halfway

@@ -20,5 +20,6 @@
       "anchor_weight": 0.75,
       "noise_sd": 2.0
     }
-  }
+  },
+  "wet_noise_multiplier": 2.0
 }
