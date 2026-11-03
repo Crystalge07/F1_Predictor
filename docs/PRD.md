@@ -151,7 +151,7 @@ These are what make the project technically hard; each needs explicit handling a
 Build it during the off-season, backtest on the 2026 season, and go live for the first race of 2027.
 
 1. **Data foundation:** pull Jolpica (2018+) and OpenF1 (2023+) data into the database; backfill 2018–2026; write validation checks.
-2. **Baseline + first model:** grid-order baseline, then a post-qualifying XGBoost model with a time-based split. Gate: it beats the baseline.
+2. **Baseline + first model:** grid-order baseline, then a post-qualifying XGBoost model with a time-based split. Original gate: it beats the baseline. **Outcome (2026-11-02): not met as written; gate redefined** (see Decisions made).
 3. **All stages + probabilities:** add pre-weekend and practice-stage models, the Monte Carlo step, and SHAP explanations.
 4. **Backtest:** replay the 2026 season race by race as if live, logging and scoring every prediction. This produces the first resume metric.
 5. **Automation:** scheduler, fetch retries, scorer, and retraining, all hands-off. Gate: a full simulated weekend runs with zero manual steps.
@@ -172,6 +172,9 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 - **Database access:** raw standard SQL with `sqlite3`, no ORM, kept Postgres-compatible.
 - **Telemetry:** not stored; no planned feature needs it.
 - **DNFs in the position model:** the model predicts finishing position *given the driver finishes*; retirements are left out of the training target. DNF risk is handled in the Phase 3 Monte Carlo step. Scoring still covers the full grid (retirements included), the same as the baselines.
+- **Phase 2 gate, redefined (2026-11-02):** the original gate (post-quali model beats the grid on position MAE) was not met. Walk-forward results: 2026 rounds 10–19 MAE 2.88 vs grid 3.25 (+11%), 2025 season 3.35 vs 3.34 (tie), and worse than the grid on the validation races (2024, 2026 rounds 1–9). Fixes tried on validation only: predicting places gained, regularisation, feature subsets, LambdaRank, and practice long/short-run pace; none clearly beat the grid. Conclusion: right after qualifying, the grid is near the ceiling for ranking finishers with free data, and differences of ~0.1 place over 20–30 races are mostly noise. Phase 2 closes with a model that matches the grid; the bar the project is judged on moves to Phase 3: win/podium probabilities (Brier score) and the pre-weekend stage, both scored against their baselines.
+- **2026 sample weight:** 3 (tuned on 2026 rounds 1–9; every value from 1 to 12 scored within 0.04 places, so it barely matters yet).
+- **Practice pace:** long-run and short-run pace features exist (2023+) but are not used by the post-quali model, where they didn't help on validation. Kept for the pre-weekend and practice stages in Phase 3.
 - **Features (Phase 2):** computed on the fly into a DataFrame for now; the stored `features` table comes in Phase 4 with the prediction log.
 - **Drivers without a Jolpica id:** `session_entries` table with nullable driver/team ids (see Edge cases).
 

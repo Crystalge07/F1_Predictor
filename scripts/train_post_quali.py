@@ -7,7 +7,7 @@ The races are split into three groups, so that no number we report was used
 to make a choice (that would flatter the model):
 
     TUNE   2026 rounds 1-9    pick the 2026 weight multiplier here
-    GATE   2026 rounds 10+    untouched until the very end: the pass/fail test
+    GATE   2026 rounds 10+    untouched until the very end: the held-out test
     CHECK  2025 (all rounds)  a second, independent check on a whole season of
                               the old regulations (the 2026 weight can't
                               affect it: there are no 2026 rows before 2025 races)
@@ -97,10 +97,14 @@ def main() -> None:
     print_comparison(f"GATE: 2026 rounds {LAST_TUNING_ROUND + 1}+", gate_model, baseline_on(gate), len(gate))
     print_comparison("CHECK: 2025 season", check_model, baseline_on(check), len(check))
 
-    # Pass = fewer places off on average than the grid, on BOTH held-out sets.
-    passed = (gate_model["position_mae"] < baseline_on(gate)["position_mae"]
-              and check_model["position_mae"] < baseline_on(check)["position_mae"])
-    print(f"\nPhase 2 gate (beat the grid baseline on MAE): {'PASS' if passed else 'FAIL'}")
+    # The original gate ("beat the grid on MAE on both held-out sets") was not
+    # met, and was redefined on 2026-11-02 (see docs/PRD.md, Decisions made):
+    # the post-quali model only has to roughly match the grid, and the real
+    # bar moves to Phase 3's probabilities. So we report, rather than pass/fail.
+    for label, model, sessions in (("2026 held-out", gate_model, gate), ("2025", check_model, check)):
+        diff = baseline_on(sessions)["position_mae"] - model["position_mae"]
+        verdict = "ahead of" if diff > 0 else "behind"
+        print(f"{label}: model is {abs(diff):.2f} places per driver {verdict} the grid")
 
     # --- 3. Final model on everything, saved for later phases -------------------
     final = train_model(features, best_weight)

@@ -36,6 +36,8 @@ don't invent fake values for rookies or round 1):
     team_season_quali        avg qualifying position of the team's cars so far this season
     driver_track_finish      driver's avg finish at this circuit in past seasons
     team_track_finish        team's avg finish at this circuit in past seasons
+
+Also on every row, but NOT in FEATURE_COLUMNS (see the note there):
     long_run_gap_pct         practice race pace, % off the best car (2023+; see practice_pace.py)
     short_run_gap_pct        best practice lap, % off the fastest (2023+)
 
@@ -63,8 +65,12 @@ FEATURE_COLUMNS = [
     "team_season_quali",
     "driver_track_finish",
     "team_track_finish",
-    *PRACTICE_PACE_COLUMNS,   # the * unpacks that list's items into this one
 ]
+# Practice pace (PRACTICE_PACE_COLUMNS) is computed and kept in the table, but
+# deliberately left out of the post-quali model: on validation races it made
+# predictions slightly worse (the grid already captures most of what practice
+# shows). It's kept for the pre-weekend/practice stages in Phase 3, where there
+# is no grid yet. Decision recorded in docs/PRD.md, 2026-11-02.
 
 # How many past races count as "recent form". The PRD says 3-5; 5 smooths
 # out one-off bad weekends a little more. A tunable knob for later.
@@ -227,6 +233,7 @@ def build_post_quali_features(conn: sqlite3.Connection) -> pd.DataFrame:
 
     id_columns = ["session_id", "season", "round", "race_date", "circuit_id",
                   "driver_id", "constructor_id"]
-    return (df[id_columns + FEATURE_COLUMNS + ["finish_position", "actual_position"]]
+    return (df[id_columns + FEATURE_COLUMNS + PRACTICE_PACE_COLUMNS
+               + ["finish_position", "actual_position"]]
             .sort_values(["race_date", "session_id", "grid"])
             .reset_index(drop=True))
