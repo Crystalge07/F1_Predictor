@@ -1,13 +1,17 @@
 {
-  "weight_2026": 3.0,
+  "frozen": {
+    "date": "2026-11-03",
+    "reason": "Settings frozen before Phase 4; see docs/evaluation-protocol.md. Remove this entry deliberately (with a reason in the commit) to change any value."
+  },
+  "weight_2026": 8.0,
   "dnf": {
     "prior_strength": 80.0,
-    "driver_weight": 0.5
+    "driver_weight": 0.75
   },
   "probabilities": {
     "pre_weekend": {
       "anchor_column": "champ_rank",
-      "anchor_weight": 0.5,
+      "anchor_weight": 0.25,
       "noise_sd": 4.0
     },
     "practice": {
@@ -17,7 +21,7 @@
     },
     "post_quali": {
       "anchor_column": "grid",
-      "anchor_weight": 0.75,
+      "anchor_weight": 0.9,
       "noise_sd": 2.0
     }
   }

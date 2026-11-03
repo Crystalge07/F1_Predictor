@@ -1,0 +1,73 @@
+# Evaluation protocol
+
+How the model is tested, which races were used for what, and what the numbers
+can honestly claim. Frozen on 2026-11-03, before Phase 4.
+
+## The rule
+
+A number only counts as a test result if **nothing was chosen by looking at
+it**. Every setting (weights, noise, shrinkage...) is picked on one set of
+races and reported on another. Every prediction is walk-forward: the model
+for a race is trained only on races before it.
+
+## Which races were used for what (2018–2026)
+
+| Races | Role |
+| --- | --- |
+| 2018–2023 | Training history only (DNF settings were chosen on 2019–2023) |
+| 2024 + 2026 rounds 1–9 | **Calibration**: every tuned setting was chosen here |
+| 2025 + 2026 rounds 10+ | **Held-out test**: reported, never used to choose |
+
+## Honest caveat: the held-out races are worn out
+
+The held-out races were never used to *pick* a setting, but they were *looked
+at* many times: after each phase, and again for every experiment branch on
+2026-11-03 (recency weighting, noise shape, wet races, fuel correction,
+feature pruning). Each look was followed by a decision about what to keep, so
+the held-out numbers are somewhat optimistic. Several branches were rejected
+partly because the held-out races disagreed with the calibration races, which
+is itself a use of the test set.
+
+**Consequences:**
+
+1. The 2026 backtest in Phase 4 is **not** an out-of-sample result: 2026
+   rounds 1–9 chose the settings, and rounds 10+ were looked at repeatedly.
+   It's useful for checking that the pipeline works end to end, and its
+   numbers must be labelled *in-sample*.
+2. **The 2027 season, predicted live, is the real test.** Predictions are
+   frozen before each race (Phase 4/5 prediction log), and no setting changes
+   in response to 2027 results until the season is over.
+
+## Frozen settings
+
+`src/f1predictor/tuned_settings.json` is marked `"frozen"`. While it is,
+`settings.save()` refuses to overwrite any value, so re-running a tuning
+script can't quietly change the model. To change settings deliberately,
+remove the `frozen` entry in the same commit as the change, and say why.
+
+Held-out results at freeze time (2025 + 2026 rounds 10+, 34 races; Brier
+score improvement over each stage's baseline, positive = better):
+
+| Stage | Baseline | Win | Podium |
+| --- | --- | --- | --- |
+| Pre-weekend | championship-order slot rates | +7.7% | +2.7% |
+| Practice | practice-order slot rates | +5.7% | +16.1% |
+| Post-quali | grid-slot rates | −1.6% | +2.6% |
+
+Post-quali finishing order (average places off): 2026 rounds 10+ 2.95 vs grid
+3.25 (+9.2%); 2025 3.37 vs grid 3.34 (−0.9%).
+
+Settings at freeze: 2026 weight 8 (every value from 1 to 12 was within 0.08
+places on calibration, so effectively arbitrary), DNF prior strength 80 and
+driver weight 0.75, post-quali grid weight 0.9 with noise 2.0, pre-weekend and
+practice anchor weight 0.25 with noise 4.0.
+
+## Experiments tried on 2026-11-03 (separate branches, not merged)
+
+| Branch | Idea | Result |
+| --- | --- | --- |
+| `model/recency-weighting` | per-season decay instead of a 2026 multiplier | calibration +1%, held-out worse on 3 of 4 measures |
+| `model/position-dependent-noise` | calmer noise at the front | calibration chose the old flat noise |
+| `model/wet-race-noise` | wider noise when it rains | worse even with a perfect forecast |
+| `model/fuel-corrected-long-runs` | fuel-correct practice long runs | no measurable effect |
+| `model/drop-overlapping-features` | drop running points totals | tie; cleaner SHAP explanations |
