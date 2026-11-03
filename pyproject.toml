@@ -1,0 +1,39 @@
+# pyproject.toml is the standard place (PEP 621) to describe a Python project:
+# its name, which Python it needs, and which libraries it depends on.
+# `pip install -e .` reads this file to install the project and its dependencies.
+
+[build-system]
+# The tool pip uses to turn this folder into an installable package.
+# setuptools is the long-standing default and needs no extra setup.
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "f1predictor"
+version = "0.1.0"
+description = "Self-updating F1 race prediction platform"
+# Your machine has Python 3.10, so that's the minimum we support.
+requires-python = ">=3.10"
+
+# Runtime dependencies for Phase 1. We only use lower bounds (>=) so pip can pick
+# the newest compatible versions; we'll pin exact versions later for reproducibility.
+dependencies = [
+    "fastf1>=3.4",     # lap times, stints, weather, track status per session
+    "requests>=2.31",  # HTTP client for calling the Jolpica API directly
+    "pandas>=2.0",     # FastF1 returns DataFrames; we'll also use it for loading data
+]
+
+[project.optional-dependencies]
+# Tools only needed while developing, not to run the pipeline.
+# Install with: pip install -e ".[dev]"
+dev = [
+    "pytest>=8.0",     # test runner
+]
+
+[tool.setuptools.packages.find]
+# Tell setuptools our package lives under src/ (the "src layout").
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Where pytest looks for tests, so `pytest` with no arguments just works.
+testpaths = ["tests"]

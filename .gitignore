@@ -1,0 +1,26 @@
+# --- Python build/runtime clutter ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Virtual environment (each machine makes its own) ---
+.venv/
+
+# --- Local data ---
+# The SQLite database and the FastF1 cache are large and can always be rebuilt
+# by running the backfill script, so they never go into git.
+data/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- OS / editor files ---
+.DS_Store
+.vscode/
+.idea/
+
+# --- Secrets (e.g. the OpenWeatherMap API key in a later phase) ---
+.env
