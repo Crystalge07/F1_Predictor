@@ -15,7 +15,8 @@ The scheduler runs this every hour (Phase 5, step 5). Each tick:
                 prediction is built and checked in memory, and only then written.
     3. SCORE    plan again, then score every race whose result is in.
     4. REPORT   record the tick in pipeline_ticks, and raise alerts for
-                problems that matter: blocked predictions, stages missed,
+                problems that matter: blocked predictions (including a run
+                that failed to write), scoring that failed, stages missed,
                 sessions given up on, Jolpica data late. (A single failed
                 fetch isn't one: data a few minutes late is normal.) Each alert is raised once
                 (pipeline_alerts); the tick returns how many are new, and the
@@ -114,11 +115,20 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
             continue
         if dry_run:
             report.predicted.append(f"{_label(action)} (passed checks; not logged: dry run)")
-        else:
+            continue
+        try:
+            # write_run is one transaction: if it fails (disk error, or the
+            # database refusing a second live run, db/schema.sql), nothing
+            # of the run is left behind, so the next tick can simply retry.
             run_id = write_run(conn, prediction, "live")
-            favourite = prediction.drivers.sort_values("p_win", ascending=False).iloc[0]
-            report.predicted.append(f"{_label(action)} -> live run {run_id} "
-                                    f"(favourite {favourite.driver_id} {favourite.p_win:.0%})")
+        except Exception as error:            # same rule: never crash the tick
+            line = f"{_label(action)}: writing the run failed: {error}"
+            report.blocked.append(line)
+            report.alerts.append((f"blocked:{action.season}:{action.round}:{action.target}", f"not logged, {line}"))
+            continue
+        favourite = prediction.drivers.sort_values("p_win", ascending=False).iloc[0]
+        report.predicted.append(f"{_label(action)} -> live run {run_id} "
+                                f"(favourite {favourite.driver_id} {favourite.p_win:.0%})")
 
     # --- 3. Score ------------------------------------------------------------
     for action in plan(conn, now):
@@ -127,7 +137,18 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
         run_ids = [r[0] for r in conn.execute(
             "SELECT run_id FROM prediction_runs r WHERE event_id = ? "
             "AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)", (action.event_id,))]
-        scored = score_runs(conn, run_ids)
+        try:
+            scored = score_runs(conn, run_ids)
+        except Exception as error:
+            # Scoring must not crash the tick either (the alerts and the tick
+            # record below still need to happen). Each run's scores are
+            # written in their own transaction (evaluate/scorer.py), so runs
+            # scored before the error keep their scores; the rest still have
+            # none, so the planner plans 'score' again and a later tick
+            # finishes them. Scores are upserts, so nothing is counted twice.
+            report.alerts.append((f"score_failed:{action.season}:{action.round}",
+                                  f"score_failed: {action.season} R{action.round}: {error}; retried next tick"))
+            continue
         report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s)")
 
     # --- 4. Informational problems, then the alerts ------------------------------
