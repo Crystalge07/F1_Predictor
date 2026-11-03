@@ -36,6 +36,8 @@ don't invent fake values for rookies or round 1):
     team_season_quali        avg qualifying position of the team's cars so far this season
     driver_track_finish      driver's avg finish at this circuit in past seasons
     team_track_finish        team's avg finish at this circuit in past seasons
+    long_run_gap_pct         practice race pace, % off the best car (2023+; see practice_pace.py)
+    short_run_gap_pct        best practice lap, % off the fastest (2023+)
 
 Known limitation (deliberately left for later): team rebrands get new ids in
 Jolpica ('alphatauri' -> 'rb', 'alfa' -> 'sauber', 'renault' -> 'alpine'...).
@@ -46,6 +48,8 @@ a possible later improvement.
 import sqlite3
 
 import pandas as pd
+
+from f1predictor.features.practice_pace import PRACTICE_PACE_COLUMNS, practice_pace
 
 # The model's input columns, in a fixed order. The training code imports this
 # list, so adding a feature here is the only change needed to feed it in.
@@ -59,6 +63,7 @@ FEATURE_COLUMNS = [
     "team_season_quali",
     "driver_track_finish",
     "team_track_finish",
+    *PRACTICE_PACE_COLUMNS,   # the * unpacks that list's items into this one
 ]
 
 # How many past races count as "recent form". The PRD says 3-5; 5 smooths
@@ -216,6 +221,9 @@ def build_post_quali_features(conn: sqlite3.Connection) -> pd.DataFrame:
     df = _add_driver_form(df)
     df = _add_team_features(df)
     df = _add_driver_track_history(df)
+    # Practice pace: left merge, so drivers with no practice laps (and every
+    # race before 2023) simply get NaN.
+    df = df.merge(practice_pace(conn), on=["session_id", "driver_id"], how="left")
 
     id_columns = ["session_id", "season", "round", "race_date", "circuit_id",
                   "driver_id", "constructor_id"]
