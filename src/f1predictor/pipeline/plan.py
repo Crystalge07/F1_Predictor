@@ -194,7 +194,8 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             else:
                 # Tried every tick for a day: stop, and say so once per tick
                 # instead of hammering the API until LOOK_BACK runs out.
-                act("gave_up", session_type, f"no OpenF1 data {GIVE_UP} after it was ready")
+                act("gave_up", session_type,
+                    f"no OpenF1 data {GIVE_UP.total_seconds() / 3600:.0f}h after it was ready; not retried")
         # The starting grid: published after qualifying (penalties can change
         # it), so it's fetched on its own once qualifying is in, and retried
         # every tick until it appears or the race starts.

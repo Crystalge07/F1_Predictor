@@ -239,3 +239,71 @@ def predict_stage(conn: sqlite3.Connection, event_id: int, stage: str, mode: str
     if mode not in MODES:   # check before the (slow) prediction, not after
         raise ValueError(f"Unknown mode {mode!r}; expected one of {MODES}")
     return write_run(conn, make_prediction(conn, event_id, stage, n_sims=n_sims, seed=seed), mode)
+
+
+# -----------------------------------------------------------------------------
+# Checks before a LIVE run is written (shared by scripts/predict_event.py and
+# the pipeline tick). Live runs can never be edited or deleted, so anything
+# that looks like a bad input blocks the write; the caller reports it and
+# tries again later (or a person looks at it).
+# -----------------------------------------------------------------------------
+
+# A real F1 field: 20 cars until 2025, 22 from 2026. Outside this range the
+# driver list is almost certainly broken (e.g. a failed match of car numbers).
+MIN_DRIVERS, MAX_DRIVERS = 18, 26
+# More lineup changes than this versus the last race is suspicious: a normal
+# weekend has 0-2 (a stand-in, a mid-season swap).
+MAX_LINEUP_CHANGES = 4
+
+
+def check_prediction(conn: sqlite3.Connection, prediction: StagePrediction) -> list[str]:
+    """Problems with a prediction's INPUTS or outputs, as readable lines (empty = fine)."""
+    from f1predictor.features.as_of import event_info, previous_race_lineup
+
+    problems = []
+    drivers = prediction.drivers
+    if not MIN_DRIVERS <= len(drivers) <= MAX_DRIVERS:
+        problems.append(f"{len(drivers)} drivers (expected {MIN_DRIVERS}-{MAX_DRIVERS})")
+    if drivers["driver_id"].duplicated().any():
+        problems.append("a driver appears twice")
+    probability_columns = ["p_win", "p_podium", "p_points", "p_dnf"]
+    if drivers[probability_columns].isna().any().any():
+        problems.append("missing probabilities")
+    # Exactly one winner and three podium places per simulated race (unless
+    # nearly everyone retires, which never happens), so the sums are ~1 and ~3.
+    if abs(drivers["p_win"].sum() - 1) > 0.02:
+        problems.append(f"win chances add up to {drivers['p_win'].sum():.3f}, not 1")
+    if abs(drivers["p_podium"].sum() - 3) > 0.05:
+        problems.append(f"podium chances add up to {drivers['p_podium'].sum():.3f}, not 3")
+    if drivers["anchor_position"].isna().any():
+        problems.append("a driver has no anchor position (grid / championship / practice slot)")
+
+    info = event_info(conn, prediction.event_id)
+    previous = set(previous_race_lineup(conn, info["race_date"])["driver_id"])
+    if previous and info["round"] > 1:     # round 1: big changes are normal (new season)
+        changes = len(set(drivers["driver_id"]) ^ previous)   # ^ = in one set but not both
+        if changes > MAX_LINEUP_CHANGES:
+            problems.append(f"{changes} driver changes vs the last race (more than {MAX_LINEUP_CHANGES})")
+    return problems
+
+
+def live_problems(conn: sqlite3.Connection, prediction: StagePrediction, now: datetime) -> list[str]:
+    """Reasons a prediction can't be logged LIVE right now (empty = go ahead).
+
+    On top of check_prediction: the cutoff hasn't passed (a "live" prediction
+    made after the session started wouldn't be honest), this race and stage
+    has no live run yet, and the code is a clean commit (so model_version
+    names exactly the code that ran).
+    """
+    from f1predictor.pipeline.plan import parse_utc
+
+    problems = check_prediction(conn, prediction)
+    if now >= parse_utc(prediction.as_of_utc):
+        problems.append(f"the cutoff {prediction.as_of_utc} has passed")
+    if conn.execute("SELECT 1 FROM prediction_runs WHERE event_id = ? AND stage = ? AND mode = 'live'",
+                    (prediction.event_id, prediction.stage)).fetchone():
+        problems.append("a live run for this race and stage already exists")
+    version = model_version()
+    if version.startswith("nogit") or "-dirty" in version:
+        problems.append(f"code version {version}: uncommitted changes")
+    return problems

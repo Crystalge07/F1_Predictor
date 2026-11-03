@@ -463,6 +463,32 @@ CREATE TABLE IF NOT EXISTS scores (
     PRIMARY KEY (run_id, metric)
 );
 
+-- -----------------------------------------------------------------------------
+-- The automated pipeline (Phase 5): what each tick did, and what it alerted on.
+-- -----------------------------------------------------------------------------
+
+-- One row per tick (pipeline/tick.py). The record behind the PRD's
+-- "pipeline reliability" metric: how many ticks ran cleanly.
+CREATE TABLE IF NOT EXISTS pipeline_ticks (
+    tick_id         INTEGER PRIMARY KEY,
+    started_at_utc  TIMESTAMP NOT NULL,
+    finished_at_utc TIMESTAMP,          -- NULL = the tick crashed before finishing
+    dry_run         INTEGER NOT NULL CHECK (dry_run IN (0, 1)),
+    -- What happened, as JSON: {"fetched": {...}, "predicted": [...], "blocked": [...], ...}
+    report_json     TEXT,
+    new_alerts      INTEGER             -- how many alerts this tick raised for the first time
+);
+
+-- Every alert ever raised, once. Problems like "this stage was missed" stay
+-- true for days, and the tick runs every hour; without this table the same
+-- alert would be sent ~24 times a day. A tick only fails (and so emails)
+-- for alerts whose key isn't here yet.
+CREATE TABLE IF NOT EXISTS pipeline_alerts (
+    alert_key      TEXT PRIMARY KEY,    -- e.g. 'missed:2026:20:practice'
+    message        TEXT NOT NULL,
+    first_seen_utc TIMESTAMP NOT NULL
+);
+
 -- "Every run for this event", for the dashboard's per-weekend timeline.
 CREATE INDEX IF NOT EXISTS idx_runs_event ON prediction_runs (event_id, stage);
 

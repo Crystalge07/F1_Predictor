@@ -11,10 +11,12 @@ these hold:
     1. a dry run of the same race and stage was made earlier, with the same
        code and settings (it's saved in data/dry_runs/), and the prediction
        made now is identical to it: what gets logged is exactly what was checked;
-    2. the stage's cutoff hasn't passed (a "live" prediction made after the
+    2. the input checks pass (predict/stage.check_prediction: field size,
+       probabilities add up, no more than a few driver changes vs last race);
+    3. the stage's cutoff hasn't passed (a "live" prediction made after the
        session started wouldn't be honest);
-    3. there's no live run for this race and stage yet;
-    4. the git working tree is clean, so model_version names a real commit.
+    4. there's no live run for this race and stage yet;
+    5. the git working tree is clean, so model_version names a real commit.
 
 The dry run prints the inputs worth checking before going live: where the
 driver list came from and how it differs from the last race, the cutoff,
@@ -28,9 +30,8 @@ from datetime import datetime, timezone
 
 from f1predictor import config
 from f1predictor.db.connection import get_connection, init_db
-from f1predictor.features.as_of import event_info, previous_race_lineup, stage_cutoff, STAGES
-from f1predictor.pipeline.plan import parse_utc
-from f1predictor.predict.stage import model_version, make_prediction, write_run
+from f1predictor.features.as_of import event_info, previous_race_lineup, STAGES
+from f1predictor.predict.stage import check_prediction, live_problems, model_version, make_prediction, write_run
 
 DRY_RUN_DIR = config.DATA_DIR / "dry_runs"
 
@@ -73,6 +74,8 @@ def print_checks(conn, info, prediction) -> None:
     flagged = per_driver[per_driver > 0].sort_values(ascending=False)
     print(f"unknown feature values (of {n_features} per driver): "
           + (", ".join(f"{d} {int(n)}" for d, n in flagged.items()) if not flagged.empty else "none"))
+    problems = check_prediction(conn, prediction)
+    print("input checks: " + ("all passed" if not problems else "FAILED: " + "; ".join(problems)))
 
 
 def main() -> None:
@@ -114,14 +117,9 @@ def main() -> None:
         elif json.loads(path.read_text(encoding="utf-8")) != record:
             problems.append(f"the prediction differs from the dry run in {path} "
                             "(data, code or settings changed): dry-run again and re-check")
-        cutoff = stage_cutoff(info, args.stage)
-        if datetime.now(timezone.utc) >= parse_utc(cutoff):
-            problems.append(f"the cutoff {cutoff} has passed")
-        if conn.execute("SELECT 1 FROM prediction_runs WHERE event_id = ? AND stage = ? AND mode = 'live'",
-                        (event_id, args.stage)).fetchone():
-            problems.append("a live run for this race and stage already exists")
-        if version.startswith("nogit") or "-dirty" in version:
-            problems.append(f"code version {version}: commit (or stash) changes first")
+        # The same checks the pipeline tick uses (predict/stage.live_problems):
+        # input sanity, cutoff not passed, no live run yet, clean code.
+        problems += live_problems(conn, prediction, datetime.now(timezone.utc))
         if problems:
             raise SystemExit("NOT logged:\n  - " + "\n  - ".join(problems))
 
