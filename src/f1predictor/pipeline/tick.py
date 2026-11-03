@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from f1predictor.evaluate.scorer import score_runs
 from f1predictor.pipeline.drift import drift_alerts
 from f1predictor.pipeline.fetch import run_fetches
-from f1predictor.pipeline.plan import Action, plan, to_utc_text
+from f1predictor.pipeline.plan import Action, as_utc, plan, to_utc_text
 from f1predictor.predict.stage import live_problems, make_prediction, write_run
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,9 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
     """
     from f1predictor.pipeline.fetch import make_clients
 
-    now = now or datetime.now(timezone.utc)
+    # Any timezone is accepted and converted; a time with none is refused
+    # (pipeline/plan.as_utc), so a tick can't silently run hours off.
+    now = as_utc(now or datetime.now(timezone.utc))
     if jolpica_client is None or openf1_client is None:
         jolpica_client, openf1_client = make_clients()
     report = TickReport(now=to_utc_text(now), dry_run=dry_run)

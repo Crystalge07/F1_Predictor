@@ -37,6 +37,7 @@ dashboard = [
 ]
 dev = [
     "pytest>=8.0",     # test runner
+    "pyyaml>=6.0",     # tests read the GitHub Actions workflow (tests/test_scheduler_utc.py)
 ]
 
 [tool.setuptools.packages.find]

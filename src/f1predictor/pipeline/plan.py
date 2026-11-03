@@ -105,8 +105,25 @@ class Action:
 # 'Z', so it's swapped for the equivalent '+00:00'.
 # -----------------------------------------------------------------------------
 
+def as_utc(moment: datetime) -> datetime:
+    """The same instant, in UTC. Refuses a time with no timezone ("naive"):
+    Python would quietly read it as THIS machine's local time, which differs
+    between a laptop in Toronto and GitHub's runner (UTC). Every time the
+    pipeline handles must say which timezone it's in."""
+    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+        raise ValueError(f"time without a timezone: {moment.isoformat()} (give it one, e.g. UTC)")
+    return moment.astimezone(timezone.utc)
+
+
 def parse_utc(text: str) -> datetime:
-    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    """'2026-11-06T15:30:00Z' (or any explicit offset) -> aware UTC datetime.
+    Text without an offset is refused, not guessed (see as_utc): e.g.
+    `scripts/tick.py --now 2026-11-07T17:20:00` on a Toronto laptop would
+    otherwise mean 22:20 UTC, five hours from what was meant."""
+    moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise ValueError(f"time without a timezone: {text!r} (end it with Z for UTC)")
+    return moment.astimezone(timezone.utc)
 
 
 def to_utc_text(moment: datetime) -> str:
@@ -183,6 +200,10 @@ def _unscored_runs(conn: sqlite3.Connection, event_id: int) -> int:
 def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
     """Everything due at `now` (a timezone-aware datetime), in a sensible order:
     fetches first (later steps need their data), then predictions, then scoring."""
+    # Everything below works in UTC. In particular the season is the UTC
+    # year: at 23:00 UTC on Dec 31 it's already Jan 1 in Europe, and the
+    # planner must not go looking for next year's calendar an hour early.
+    now = as_utc(now)
     actions: list[Action] = []
     # When live predicting started: the first live run's creation time.
     first_live = conn.execute("SELECT MIN(created_at_utc) FROM prediction_runs WHERE mode = 'live'").fetchone()[0]
