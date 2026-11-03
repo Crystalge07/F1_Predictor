@@ -26,8 +26,9 @@ from f1predictor.features.race_features import POST_QUALI_FEATURES
 REGULATION_RESET_SEASON = 2026
 
 # The 2026 multiplier, chosen by scripts/train_post_quali.py and stored in
-# tuned_settings.json (see settings.py). On 2026-11-02 every value from 1 to
-# 12 scored within 0.04 places, so it barely matters yet.
+# tuned_settings.json (see settings.py). Every value from 1 to 12 scores
+# within ~0.08 places on the calibration races, so the exact value (3 in
+# Phase 2, 8 at the 2026-11-03 freeze) is effectively arbitrary.
 WEIGHT_2026: float = settings.load()["weight_2026"]
 
 # XGBoost settings. Deliberately conservative: we only have ~3,300 training

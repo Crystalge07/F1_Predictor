@@ -16,7 +16,8 @@ from the model's raw numbers was WORSE than the grid-only baseline. Two reasons:
        squeeze.
     2. As Phase 2 found, the grid is very hard to beat after qualifying. Mostly
        trusting it and letting the model nudge it worked best on the
-       calibration races: 75% grid + 25% model order.
+       calibration races (75% grid in Phase 3; 90% at the 2026-11-03 freeze,
+       see tuned_settings.json).
 
 Also home to the scoring used for probabilities (Brier score per outcome).
 """
