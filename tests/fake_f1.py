@@ -26,6 +26,8 @@ Knobs that make things go wrong on purpose (all keyed by (season, round, X)):
     empty_until  {key: datetime}: the data is LATE. Before that time, OpenF1
                  answers session X with an empty lap list, or (X = 'results')
                  Jolpica's results leave the round out. Tests can change it.
+    sprint_rounds  a set of (season, round): those are sprint weekends
+                 (SPRINT_OFFSETS), with sprint results on Jolpica's /sprint.
     tamper       {key: kind}: the data is BROKEN, until a test removes the key.
                  OpenF1 session X: 'drop_driver' (d20 missing from drivers,
                  laps and stints) or 'half_laps' (only the first half of the
@@ -40,9 +42,11 @@ import requests
 PUBLISH_DELAY = timedelta(minutes=15)
 GRID_DELAY = timedelta(hours=2)
 RESULTS_DELAY = timedelta(hours=1)
-LENGTH = {"FP1": 1, "FP2": 1, "FP3": 1, "Q": 1, "R": 2}      # hours
+LENGTH = {"FP1": 1, "FP2": 1, "FP3": 1, "Q": 1, "R": 2, "SQ": 0.75, "S": 1}   # hours
 RACE_LAPS = 20
+SPRINT_LAPS = 10
 POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]
+SPRINT_POINTS = [8, 7, 6, 5, 4, 3, 2, 1]
 
 DRIVERS = [f"d{i:02d}" for i in range(1, 21)]
 TEAM = {d: f"t{(i // 2) + 1:02d}" for i, d in enumerate(DRIVERS)}   # d01,d02 -> t01 ...
@@ -55,6 +59,19 @@ CALENDAR = {
     2027: ["2027-03-07", "2027-03-14", "2027-03-21"],
 }
 SESSION_OFFSETS = {"FP1": (-2, 12), "FP2": (-2, 16), "FP3": (-1, 11), "Q": (-1, 15), "R": (0, 15)}
+# A sprint weekend (the 2024+ format, FakeF1(sprint_rounds=...)): FP2 and FP3
+# give way to Sprint Qualifying (Fri 16:00) and the Sprint (Sat 11:00), both
+# before qualifying.
+SPRINT_OFFSETS = {"FP1": (-2, 12), "SQ": (-2, 16), "S": (-1, 11), "Q": (-1, 15), "R": (0, 15)}
+ALL_OFFSETS = {**SESSION_OFFSETS, **SPRINT_OFFSETS}
+# Fixed order for session keys. SQ and S go last, so the keys of normal
+# sessions are the same as before sprints existed in this world.
+ALL_SESSION_TYPES = ["FP1", "FP2", "FP3", "Q", "R", "SQ", "S"]
+# The names each API uses for a session.
+JOLPICA_KEY = {"FP1": "FirstPractice", "FP2": "SecondPractice", "FP3": "ThirdPractice",
+               "SQ": "SprintQualifying", "S": "Sprint", "Q": "Qualifying"}
+OPENF1_NAME = {"FP1": "Practice 1", "FP2": "Practice 2", "FP3": "Practice 3",
+               "SQ": "Sprint Qualifying", "S": "Sprint", "Q": "Qualifying", "R": "Race"}
 
 
 def http_404() -> requests.HTTPError:
@@ -64,14 +81,14 @@ def http_404() -> requests.HTTPError:
 
 
 def session_start(race_day: str, session_type: str) -> datetime:
-    days, hour = SESSION_OFFSETS[session_type]
+    days, hour = ALL_OFFSETS[session_type]
     day = datetime.fromisoformat(race_day).replace(tzinfo=timezone.utc) + timedelta(days=days)
     return day.replace(hour=hour)
 
 
 def session_key(season: int, rnd: int, session_type: str) -> int:
     """A unique OpenF1-style key, e.g. 2027, 2, 'Q' -> 20270204."""
-    return season * 10_000 + rnd * 100 + list(SESSION_OFFSETS).index(session_type)
+    return season * 10_000 + rnd * 100 + ALL_SESSION_TYPES.index(session_type)
 
 
 def order(season: int, rnd: int, salt: int) -> list[str]:
@@ -87,15 +104,22 @@ def starting_grid(season: int, rnd: int) -> list[str]:
 
 class FakeF1:
     def __init__(self, now: datetime, broken: set | None = None, cancelled: set | None = None,
-                 empty_until: dict | None = None, tamper: dict | None = None):
+                 empty_until: dict | None = None, tamper: dict | None = None,
+                 sprint_rounds: set | None = None):
         self.now = now
         self.broken = broken or set()
         self.cancelled = cancelled or set()
         self.empty_until = empty_until or {}
         self.tamper = tamper or {}
+        self.sprint_rounds = sprint_rounds or set()
         self.requests = 0
 
     # --- helpers ---------------------------------------------------------------
+    def _weekend(self, season, rnd) -> list[str]:
+        """The round's sessions in calendar order, without cancelled ones."""
+        offsets = SPRINT_OFFSETS if (season, rnd) in self.sprint_rounds else SESSION_OFFSETS
+        return [t for t in offsets if (season, rnd, t) not in self.cancelled]
+
     def _late(self, season, rnd, what) -> bool:
         """True while `what` is still empty_until-delayed (see the module docstring)."""
         until = self.empty_until.get((season, rnd, what))
@@ -109,7 +133,7 @@ class FakeF1:
     def _find_key(self, key):
         for season, days in CALENDAR.items():
             for rnd in range(1, len(days) + 1):
-                for session_type in SESSION_OFFSETS:
+                for session_type in ALL_SESSION_TYPES:
                     if session_key(season, rnd, session_type) == key:
                         return season, rnd, session_type
         raise http_404()
@@ -147,9 +171,15 @@ class FakeF1:
             races = [dict(self._schedule_race(season, rnd), QualifyingResults=self._qualifying(season, rnd))
                      for rnd in range(1, len(CALENDAR[season]) + 1)
                      if season < 2027 or self._published(season, rnd, "Q")]
-        else:                                                   # sprint: none in this world
+        elif parts[1] == "sprint":
+            races = [dict(self._schedule_race(season, rnd), SprintResults=self._sprint_results(season, rnd))
+                     for rnd in range(1, len(CALENDAR[season]) + 1)
+                     if (season, rnd) in self.sprint_rounds
+                     and self._published(season, rnd, "S", RESULTS_DELAY)]
+        else:
             races = []
-        rows = sum(len(r.get("Results", r.get("QualifyingResults", [None]))) for r in races)
+        rows = sum(len(r.get("Results") or r.get("QualifyingResults") or r.get("SprintResults") or [None])
+                   for r in races)
         return {"MRData": {"total": str(rows), "RaceTable": {"Races": races}}}
 
     def _schedule_race(self, season, rnd):
@@ -157,12 +187,13 @@ class FakeF1:
         race = {"season": str(season), "round": str(rnd), "raceName": f"Test GP {rnd}",
                 "Circuit": {"circuitId": f"c{rnd}", "circuitName": f"Circuit {rnd}", "Location": {}},
                 "date": race_day, "time": "15:00:00Z"}
-        for key, session_type in [("FirstPractice", "FP1"), ("SecondPractice", "FP2"),
-                                  ("ThirdPractice", "FP3"), ("Qualifying", "Q")]:
-            if (season, rnd, session_type) in self.cancelled:
-                continue                         # not on the calendar
+        # Every session but the race (whose time is the race's own date/time
+        # above). Cancelled sessions are left out: not on the calendar.
+        for session_type in self._weekend(season, rnd):
+            if session_type == "R":
+                continue
             start = session_start(race_day, session_type)
-            race[key] = {"date": start.strftime("%Y-%m-%d"), "time": start.strftime("%H:%M:%SZ")}
+            race[JOLPICA_KEY[session_type]] = {"date": start.strftime("%Y-%m-%d"), "time": start.strftime("%H:%M:%SZ")}
         return race
 
     def _results(self, season, rnd):
@@ -176,6 +207,15 @@ class FakeF1:
                  "status": "Finished", "Time": {"millis": str(5_400_000 + p * 1000)}}
                 for p, d in enumerate(finishers, start=1)]
 
+    def _sprint_results(self, season, rnd):
+        """A 10-lap sprint: grid = sprint qualifying order, its own finishing order."""
+        grid = {d: i for i, d in enumerate(order(season, rnd, salt=len("SQ")), start=1)}
+        return [{"number": str(NUMBER[d]), "position": str(p), "positionText": str(p),
+                 "points": str(SPRINT_POINTS[p - 1] if p <= 8 else 0), "Driver": self._driver(d),
+                 "Constructor": self._constructor(d), "grid": str(grid[d]), "laps": str(SPRINT_LAPS),
+                 "status": "Finished", "Time": {"millis": str(1_800_000 + p * 1000)}}
+                for p, d in enumerate(order(season, rnd, salt=3), start=1)]
+
     def _qualifying(self, season, rnd):
         return [{"number": str(NUMBER[d]), "position": str(p), "Driver": self._driver(d),
                  "Constructor": self._constructor(d), "Q1": f"1:{20 + p * 0.1:06.3f}"}
@@ -187,11 +227,10 @@ class FakeF1:
             if season not in CALENDAR or season < 2027:
                 raise http_404()
             return [{"session_key": session_key(season, rnd, t), "meeting_key": season * 100 + rnd,
-                     "session_name": {"FP1": "Practice 1", "FP2": "Practice 2", "FP3": "Practice 3",
-                                      "Q": "Qualifying", "R": "Race"}[t],
+                     "session_name": OPENF1_NAME[t],
                      "date_start": session_start(day, t).isoformat(), "country_name": "Testland"}
-                    for rnd, day in enumerate(CALENDAR[season], start=1) for t in SESSION_OFFSETS
-                    if (season, rnd, t) not in self.cancelled]
+                    for rnd, day in enumerate(CALENDAR[season], start=1)
+                    for t in self._weekend(season, rnd)]
 
         season, rnd, session_type = self._find_key(params["session_key"])
         if endpoint == "starting_grid":
@@ -209,7 +248,7 @@ class FakeF1:
         if endpoint == "drivers":
             return [{"driver_number": NUMBER[d], "name_acronym": d.upper(), "full_name": d,
                      "team_name": TEAM[d].upper()} for d in drivers]
-        n_laps = {"Q": 3, "R": RACE_LAPS}.get(session_type, 8)
+        n_laps = {"Q": 3, "SQ": 3, "R": RACE_LAPS, "S": SPRINT_LAPS}.get(session_type, 8)
         if endpoint == "laps" and self._late(season, rnd, session_type):
             return []                            # published, but no laps in it yet
         # 'half_laps': OpenF1 only has the first half of the session.

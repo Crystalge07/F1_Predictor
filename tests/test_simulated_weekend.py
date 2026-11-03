@@ -28,11 +28,12 @@ START = datetime(2027, 3, 1, 0, 0, tzinfo=timezone.utc)      # Monday before rou
 END = datetime(2027, 3, 16, 12, 0, tzinfo=timezone.utc)      # Tuesday after round 2
 
 
-def simulate(broken=None):
-    """Run the tick every hour from START to END. Returns (conn, reports)."""
+def simulate(broken=None, **world_options):
+    """Run the tick every hour from START to END. Returns (conn, reports).
+    world_options go to FakeF1 (e.g. sprint_rounds={(2027, 2)})."""
     conn = get_connection(":memory:")
     init_db(conn)
-    world = FakeF1(now=START, broken=broken)
+    world = FakeF1(now=START, broken=broken, **world_options)
     jolpica.ingest_season(conn, world, 2026)               # history from before go-live
 
     reports = []

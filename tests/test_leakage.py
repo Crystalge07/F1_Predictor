@@ -115,7 +115,7 @@ def session_ids(conn, rnd):
 def scrambled(conn, rnd, session_types):
     """Change every kind of data from these sessions of round `rnd`, then undo it.
 
-    Reverses race results (positions AND grid), qualifying and the starting
+    Reverses race and sprint results (positions, grid, and who scored points), qualifying and the starting
     grid, and makes each car's laps FASTER by a different amount: car 20 by
     8s, car 1 by 0.4s. In the fake world car 1 is the fastest, so this
     REVERSES the pace order, and these become every driver's best laps of the
@@ -136,9 +136,12 @@ def scrambled(conn, rnd, session_types):
             if session_type == "Q":
                 conn.execute("UPDATE qualifying SET position = 21 - position WHERE session_id = ?", (sid,))
                 conn.execute("UPDATE starting_grid SET position = 21 - position WHERE session_id = ?", (sid,))
-            if session_type == "R":
+            if session_type in ("R", "S"):            # race or sprint result
+                # Points too: the championship features are built from the
+                # points column, not positions. Scorers get 0, the rest 10.
                 conn.execute("UPDATE results SET position = 21 - position, grid = 21 - grid, "
-                             "position_text = CAST(21 - position AS TEXT) WHERE session_id = ?", (sid,))
+                             "position_text = CAST(21 - position AS TEXT), "
+                             "points = CASE WHEN points > 0 THEN 0 ELSE 10 END WHERE session_id = ?", (sid,))
         yield
     finally:
         conn.rollback()
