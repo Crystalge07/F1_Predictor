@@ -120,6 +120,32 @@ def test_a_new_alert_fails_the_run_but_only_after_the_upload(workflow):
     assert "set +e" in tick_step(workflow)["run"]     # the Tick step itself doesn't stop the job
 
 
+def test_the_dashboard_is_exported_after_the_database_is_safe(workflow):
+    # The export runs after the database upload (a failing export can't
+    # cost the tick's work) and before the alert step (whose failure would
+    # stop every later step).
+    names = [s.get("name") for s in workflow["jobs"]["tick"]["steps"]]
+    assert names.index("Upload the database") < names.index("Export the dashboard data") \
+        < names.index("Package the site for GitHub Pages") < names.index("Fail if the tick raised a new alert")
+    export = next(s for s in workflow["jobs"]["tick"]["steps"] if s.get("name") == "Export the dashboard data")
+    assert "python scripts/export_dashboard.py data/f1.sqlite site" in export["run"]
+    # Deploy only when something changed: the data's hash or the code's commit.
+    assert 'hash\'])")@${GITHUB_SHA}"' in export["run"]
+
+
+def test_pages_deploys_only_when_changed_even_if_the_tick_alerted(workflow):
+    pages = workflow["jobs"]["pages"]
+    assert pages["needs"] == "tick"
+    # always(): the tick job "fails" on purpose to email an alert; the site
+    # must still be updated then. But only when there's something new.
+    assert pages["if"] == "always() && needs.tick.outputs.deploy == 'true'"
+    assert workflow["jobs"]["tick"]["outputs"]["deploy"] == "${{ steps.export.outputs.changed }}"
+    # The narrow permissions Pages needs, only in this job.
+    assert pages["permissions"] == {"pages": "write", "id-token": "write"}
+    assert pages["environment"]["name"] == "github-pages"
+    assert [s["uses"] for s in pages["steps"]] == ["actions/deploy-pages@v4"]
+
+
 # -----------------------------------------------------------------------------
 # 2. Times: one instant, any timezone; no timezone, refused
 # -----------------------------------------------------------------------------

@@ -24,3 +24,6 @@ data/
 
 # --- Secrets (e.g. the OpenWeatherMap API key in a later phase) ---
 .env
+
+# --- The dashboard site, built by the workflow (web/ + the data export) ---
+site/

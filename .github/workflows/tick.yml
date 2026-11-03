@@ -7,7 +7,10 @@
 #   3. checks the result is safe to upload (scripts/check_db_upload.py: the
 #      file is healthy and every live prediction is still there, unchanged),
 #   4. uploads it back, after saving the downloaded copy as a backup,
-#   5. fails the run if the tick raised a NEW alert, so GitHub emails about it.
+#   5. exports the dashboard's data (scripts/export_dashboard.py) and, if it
+#      or the code changed since the live site was deployed, deploys the
+#      site to GitHub Pages (the "pages" job below),
+#   6. fails the run if the tick raised a NEW alert, so GitHub emails about it.
 #
 # Off until the repository variable PIPELINE_ENABLED is set to "true"
 # (Settings -> Secrets and variables -> Actions -> Variables).
@@ -41,6 +44,9 @@ jobs:
     if: vars.PIPELINE_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      # Read by the pages job: whether there's something new to deploy.
+      deploy: ${{ steps.export.outputs.changed }}
     env:
       GH_TOKEN: ${{ github.token }}   # lets the gh CLI use this repository's releases
       RELEASE: database
@@ -96,8 +102,52 @@ jobs:
             gh release upload "$RELEASE" "data/upload/f1-$(date -u +%a).sqlite.gz" --clobber
           fi
 
+      - name: Export the dashboard data
+        id: export
+        # After the upload, so the database is safe whatever happens here.
+        # The site = the page (web/placeholder until the React app exists)
+        # + the data. Deployed only if something changed since the live
+        # site: its data hash or the code's commit. Most hours, neither has.
+        run: |
+          mkdir -p site
+          cp -r web/placeholder/. site/
+          python scripts/export_dashboard.py data/f1.sqlite site
+          new="$(python -c "import json; print(json.load(open('site/data/version.json'))['hash'])")@${GITHUB_SHA}"
+          echo "{\"deployed\": \"$new\"}" > site/deployed.json
+          live="$(curl -fsS "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/deployed.json" 2>/dev/null \
+                  | python -c "import json, sys; print(json.load(sys.stdin)['deployed'])" 2>/dev/null || echo none)"
+          echo "live site: $live"
+          echo "this run:  $new"
+          if [ "$new" != "$live" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Package the site for GitHub Pages
+        if: steps.export.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
       - name: Fail if the tick raised a new alert
         if: steps.tick.outputs.code != '0'
         run: |
           echo "The tick raised a new alert (or crashed): see the Tick step above."
           exit 1
+
+  # Deploys the site packaged by the tick job to GitHub Pages, when it changed.
+  # A separate job because Pages needs its own permissions. `always()`: it
+  # still deploys when the tick job failed only to send an alert email
+  # (its last step); if the export itself failed, there's nothing to deploy.
+  pages:
+    needs: tick
+    if: always() && needs.tick.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write              # to deploy to GitHub Pages
+      id-token: write           # to prove the deploy comes from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

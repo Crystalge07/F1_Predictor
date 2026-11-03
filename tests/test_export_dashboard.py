@@ -1,0 +1,235 @@
+"""The dashboard export (src/f1predictor/export/dashboard.py).
+
+The React dashboard shows ONLY what these files hold, so the tests check
+that the files say exactly what the prediction log says, nothing more:
+
+    * every logged number is in the race file, equal to the log (rounded);
+    * a race's status, result and scores appear when they exist, not before;
+    * a debutant's temporary id comes with his name and, after the race, who he was;
+    * the scorecard equals the scorer's own summary, and keeps live and
+      backtest apart, each with its label;
+    * the same database always gives the same bytes and hash (so an hourly
+      tick that changed nothing deploys nothing), and any change changes the hash;
+    * the export never writes to the database.
+
+Data: the fake world's 2027 rounds 1-3 run hour by hour by the real
+pipeline (test_simulated_weekend.simulate), with two debutants in round 2
+(as in test_debutants.py).
+"""
+
+import hashlib
+import json
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from f1predictor.db.connection import get_connection
+from f1predictor.evaluate.scorer import score_runs, summary
+from f1predictor.export.dashboard import export
+from f1predictor.predict import stage
+
+from test_simulated_weekend import END, simulate
+
+ROOT = Path(__file__).resolve().parent.parent
+DEBUTANTS = {(2027, 2): {"d05": {"id": "n50", "number": 50}, "d12": {"id": "n51", "number": 51}}}
+N50 = "provisional_2027_r02_car50"
+
+
+@pytest.fixture(scope="module")
+def world():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(stage, "model_version", lambda: "abc1234+settings.00000000")
+    try:
+        conn, _ = simulate(debutants=DEBUTANTS)
+        yield conn
+    finally:
+        mp.undo()
+
+
+@pytest.fixture
+def exported(world, tmp_path):
+    """Export at the end of the simulation. Returns a reader: read('index.json')."""
+    export(world, tmp_path, now=END)
+
+    def read(name):
+        return json.loads((tmp_path / "data" / name).read_text())
+    return read
+
+
+def copy_of(conn):
+    """An in-memory copy, for tests that change the database."""
+    copy = get_connection(":memory:")
+    conn.backup(copy)
+    return copy
+
+
+def files(folder: Path) -> dict[str, bytes]:
+    return {p.relative_to(folder).as_posix(): p.read_bytes() for p in sorted(folder.rglob("*.json"))}
+
+
+# -----------------------------------------------------------------------------
+# What's in the files
+# -----------------------------------------------------------------------------
+
+def test_one_file_per_race_with_predictions_plus_the_index_and_scorecard(world, tmp_path):
+    export(world, tmp_path, now=END)
+    # 2027 rounds 1-3 have logged runs; 2026 (history only, no runs) has
+    # no files at all. Plain files, no NaN anywhere (JSON can't hold it,
+    # and a browser would fail to read the file).
+    assert set(files(tmp_path / "data")) == {"index.json", "scorecard.json", "version.json",
+                                            "races/2027-01.json", "races/2027-02.json", "races/2027-03.json"}
+    for content in files(tmp_path / "data").values():
+        json.loads(content, parse_constant=lambda c: pytest.fail(f"{c} in a file"))
+
+
+def test_every_logged_number_is_in_the_race_file_exactly(world, exported):
+    race = exported("races/2027-01.json")
+    assert [r["stage"] for r in race["runs"]] == ["pre_weekend", "practice", "post_quali"]
+    for run in race["runs"]:
+        logged = world.execute("SELECT * FROM predictions WHERE run_id = ? ORDER BY predicted_rank",
+                               (run["run_id"],)).fetchall()
+        # Same drivers, in the same order, with the same numbers (rounded to 4 places).
+        assert [d["driver_id"] for d in run["drivers"]] == [p["driver_id"] for p in logged]
+        for d, p in zip(run["drivers"], logged):
+            for column in ("p_win", "p_podium", "p_points", "p_dnf"):
+                assert d[column] == pytest.approx(p[column], abs=5e-5)
+            assert d["predicted_rank"] == p["predicted_rank"]
+            # Every SHAP factor of the driver, biggest effect first.
+            n_features = world.execute("SELECT COUNT(*) FROM prediction_features WHERE run_id = ? "
+                                       "AND driver_id = ?", (run["run_id"], p["driver_id"])).fetchone()[0]
+            effects = [abs(f["contribution"]) for f in d["factors"]]
+            assert len(effects) == n_features > 0 and effects == sorted(effects, reverse=True)
+        # Run details the dashboard shows (when it was logged, its cutoff, the code).
+        row = world.execute("SELECT as_of_utc, created_at_utc, model_version FROM prediction_runs "
+                            "WHERE run_id = ?", (run["run_id"],)).fetchone()
+        assert (run["as_of_utc"], run["logged_at_utc"], run["model_version"]) == tuple(row)
+        assert run["mode"] == "live"
+
+
+def test_results_and_scores_appear_only_once_the_race_has_them(exported):
+    finished, upcoming = exported("races/2027-01.json"), exported("races/2027-03.json")
+    # Round 1: raced. The result, in finishing order, and every run's scores.
+    assert finished["status"] == "finished"
+    assert [r["position"] for r in finished["result"]] == list(range(1, 21))
+    assert all(run["scores"]["position_mae"]["baseline"] is not None for run in finished["runs"])
+    # Round 3: only its pre-weekend prediction so far. No result, no scores.
+    assert upcoming["status"] == "predicted"
+    assert upcoming["result"] is None
+    assert [(r["stage"], r["scores"]) for r in upcoming["runs"]] == [("pre_weekend", None)]
+
+
+def test_names_and_teams_come_with_the_file_and_a_debutant_is_identified(exported):
+    race = exported("races/2027-02.json")
+    # Every id in the file has a name (one table per file, ids in the runs).
+    ids = {d["driver_id"] for run in race["runs"] for d in run["drivers"]} | {r["driver_id"] for r in race["result"]}
+    assert ids <= set(race["drivers"])
+    assert race["drivers"]["d01"] == {"name": "Test D01", "code": "D01", "provisional": False, "resolved_as": None}
+    assert race["teams"]["t03"] == "T03"
+    # The debutant was predicted at practice under a temporary id; the file
+    # says so, gives OpenF1's name, and (the race being over) who he was.
+    assert race["drivers"][N50] == {"name": "Rookie N50", "code": None, "provisional": True, "resolved_as": "n50"}
+    assert "n50" in race["drivers"]
+
+
+def test_the_index_lists_the_calendar_and_the_next_race(world, exported, tmp_path):
+    index = exported("index.json")
+    [season] = index["seasons"]
+    assert season["season"] == 2027
+    assert [(r["round"], r["status"], r["file"]) for r in season["races"]] == [
+        (1, "finished", "races/2027-01.json"), (2, "finished", "races/2027-02.json"),
+        (3, "predicted", "races/2027-03.json")]
+    assert season["races"][0]["live_stages"] == ["pre_weekend", "practice", "post_quali"]
+    assert season["races"][2]["race_start_utc"] == "2027-03-21T15:00:00Z"
+    assert index["next_race"] == {"season": 2027, "round": 3}
+    # After the last race of the calendar has started: no next race.
+    later = tmp_path / "later"
+    export(world, later, now=datetime(2027, 3, 22, tzinfo=timezone.utc))
+    assert json.loads((later / "data" / "index.json").read_text())["next_race"] is None
+
+
+def test_the_scorecard_is_the_scorers_summary_with_live_and_backtest_kept_apart(world, tmp_path):
+    # Add a BACKTEST run of round 1 (and score it), so both kinds exist.
+    conn = copy_of(world)
+    event_id = conn.execute("SELECT event_id FROM events WHERE season = 2027 AND round = 1").fetchone()[0]
+    score_runs(conn, [stage.predict_stage(conn, event_id, "post_quali", mode="backtest", n_sims=500)])
+    export(conn, tmp_path, now=END)
+    card = json.loads((tmp_path / "data" / "scorecard.json").read_text())
+    groups = {(g["season"], g["mode"]): g for g in card["groups"]}
+    # Two groups, never added together, each with the label the scorer gives it.
+    assert list(groups) == [(2027, "live"), (2027, "backtest")]
+    assert groups[(2027, "live")]["label"].startswith("2027 live: the real test")
+    assert groups[(2027, "backtest")]["label"].startswith("2027 backtest (in-sample")
+    # The live numbers are exactly the scorer's summary of LIVE runs only:
+    # the backtest run's scores aren't mixed in.
+    live = summary(conn, 2027, "live")
+    for row in live.itertuples():
+        exported_row = groups[(2027, "live")]["stages"][row.stage][row.metric]
+        assert exported_row["races"] == row.races == 2
+        assert exported_row["model"] == pytest.approx(row.model, abs=5e-5)
+    assert groups[(2027, "backtest")]["stages"]["post_quali"]["position_mae"]["races"] == 1
+    assert list(groups[(2027, "backtest")]["stages"]) == ["post_quali"]
+
+
+# -----------------------------------------------------------------------------
+# Same data, same files; any change, a new hash
+# -----------------------------------------------------------------------------
+
+def test_the_same_database_gives_the_same_bytes_and_hash(world, tmp_path):
+    # Two exports an hour apart with nothing changed in between: identical
+    # files, except the export time in version.json, which isn't hashed.
+    # This is what makes "deploy only if the hash changed" work.
+    first = export(world, tmp_path / "a", now=END)
+    second = export(world, tmp_path / "b", now=END.replace(hour=13))
+    a, b = files(tmp_path / "a" / "data"), files(tmp_path / "b" / "data")
+    assert {k: v for k, v in a.items() if k != "version.json"} == {k: v for k, v in b.items() if k != "version.json"}
+    assert first["hash"] == second["hash"]
+    assert first["exported_at_utc"] != second["exported_at_utc"]
+
+
+def test_any_change_in_what_is_shown_changes_the_hash(world, tmp_path):
+    before = export(world, tmp_path / "a", now=END)["hash"]
+    # Scores may be rewritten (e.g. after a penalty changes a result).
+    conn = copy_of(world)
+    conn.execute("UPDATE scores SET model_value = model_value + 0.5 WHERE metric = 'position_mae' "
+                 "AND run_id = (SELECT MIN(run_id) FROM prediction_runs)")
+    assert export(conn, tmp_path / "b", now=END)["hash"] != before
+
+
+def test_files_from_an_earlier_export_that_no_longer_exist_are_removed(world, tmp_path):
+    # The folder is exactly one export: a race file that shouldn't be there
+    # (e.g. a race renumbered on the calendar) doesn't linger on the site.
+    stale = tmp_path / "data" / "races" / "1999-01.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("{}")
+    export(world, tmp_path, now=END)
+    assert not stale.exists()
+
+
+# -----------------------------------------------------------------------------
+# The script: read-only
+# -----------------------------------------------------------------------------
+
+def test_the_script_never_writes_to_the_database(world, tmp_path):
+    # The real script, on a database file, as the workflow runs it. The file
+    # is byte-for-byte the same afterwards (SQLite opened with mode=ro).
+    db = tmp_path / "f1.sqlite"
+    disk = get_connection(db)
+    world.backup(disk)
+    disk.close()
+    before = hashlib.sha256(db.read_bytes()).hexdigest()
+    out = subprocess.run([sys.executable, str(ROOT / "scripts" / "export_dashboard.py"), str(db), str(tmp_path / "site")],
+                         capture_output=True, text=True, check=True).stdout
+    assert out.startswith("exported 6 files, hash ")
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+    assert (tmp_path / "site" / "data" / "index.json").exists()
+
+
+def test_the_script_refuses_a_missing_database(tmp_path):
+    # (Rather than SQLite creating an empty one and exporting nothing.)
+    run = subprocess.run([sys.executable, str(ROOT / "scripts" / "export_dashboard.py"),
+                          str(tmp_path / "missing.sqlite"), str(tmp_path / "site")], capture_output=True, text=True)
+    assert run.returncode != 0 and "no database at" in run.stderr
+    assert not (tmp_path / "missing.sqlite").exists()
