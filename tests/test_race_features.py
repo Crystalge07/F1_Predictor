@@ -156,3 +156,23 @@ def test_no_leakage_from_the_race_being_predicted(conn):
         for feature in POST_QUALI_FEATURES:
             x, y = row(before, r3, driver)[feature], row(after, r3, driver)[feature]
             assert (math.isnan(x) and math.isnan(y)) or x == y, f"{driver} {feature} leaked"
+
+
+def test_team_track_history_survives_a_rebrand(conn):
+    from f1predictor.features.race_features import build_race_features
+    # 'alphatauri' races at Monza in 2023, then rebrands to 'rb' for 2024.
+    for team in ("alphatauri", "rb"):
+        conn.execute("INSERT INTO constructors (constructor_id, name) VALUES (?, ?)", (team, team))
+    add_race(conn, 2023, 1, "monza", {
+        "a": ("alphatauri", 1, 6, "6", 1, 80_000), "b": ("alphatauri", 2, 8, "8", 2, 80_500)})
+    r2 = add_race(conn, 2024, 1, "monza", {
+        "a": ("rb", 1, 1, "1", 1, 80_000), "b": ("rb", 2, 2, "2", 2, 80_500)})
+    # RB's Monza record = AlphaTauri's: (6 + 8) / 2 = 7.
+    assert row(build_race_features(conn), r2, "a")["team_track_finish"] == 7.0
+
+
+def test_lineage_lookup():
+    from f1predictor.features.teams import lineage
+    assert lineage("toro_rosso") == "rb"
+    assert lineage("alfa") == "audi"
+    assert lineage("ferrari") == "ferrari"      # unlisted -> its own lineage

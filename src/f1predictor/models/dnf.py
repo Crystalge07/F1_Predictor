@@ -45,6 +45,7 @@ prior_strength and driver_weight are chosen in scripts/evaluate_dnf.py.
 import pandas as pd
 
 from f1predictor import settings
+from f1predictor.features.teams import lineage
 
 FIELD_WINDOW = 40      # races (all cars) for the background rate (~2 seasons)
 TEAM_WINDOW = 10       # races per team (two cars each -> about 20 starts)
@@ -101,9 +102,12 @@ def add_dnf_probability(features: pd.DataFrame,
         return (dnfs + prior_strength * df["field_dnf_rate"]) / (starts + prior_strength)
 
     # --- Team rate: one row per (race, team), roll over that team's races -----
+    # The window spans seasons, so roll over the team's LINEAGE: RB's rate in
+    # early 2024 still counts AlphaTauri's 2023 races (features/teams.py).
     team = (df.groupby(["race_date", "session_id", "constructor_id"], as_index=False)
               .agg(dnfs=("dnf", "sum"), starts=("dnf", "count")))
-    by_team = team.groupby("constructor_id")
+    team["team_lineage"] = team["constructor_id"].map(lineage)
+    by_team = team.groupby("team_lineage")
     team["team_past_dnfs"] = by_team["dnfs"].transform(lambda s: _past_rolling_sum(s, TEAM_WINDOW))
     team["team_past_starts"] = by_team["starts"].transform(lambda s: _past_rolling_sum(s, TEAM_WINDOW))
     df = df.merge(team[["session_id", "constructor_id", "team_past_dnfs", "team_past_starts"]],

@@ -84,3 +84,13 @@ def test_brier():
     assert brier(pd.Series([1.0, 0.0]), outcome) == 0.0      # perfect
     assert brier(pd.Series([0.5, 0.5]), outcome) == 0.25     # coin flip
     assert brier(pd.Series([0.0, 1.0]), outcome) == 1.0      # perfectly wrong
+
+
+def test_team_dnf_rate_carries_over_a_rebrand():
+    # Race 1 as 'alphatauri' (both cars retire), race 2 as 'rb'.
+    df = add_dnf_probability(races([
+        {"a": ("alphatauri", True), "b": ("alphatauri", True), "c": ("ferrari", False), "d": ("ferrari", False)},
+        {"a": ("rb", False), "b": ("rb", False), "c": ("ferrari", False), "d": ("ferrari", False)},
+    ]), prior_strength=2, driver_weight=0.0)
+    # Field rate 50%. RB inherits 2 DNFs in 2 starts: (2 + 2 * 0.5) / (2 + 2) = 0.75.
+    assert get(df, 2, "a")["dnf_prob"] == pytest.approx(0.75)

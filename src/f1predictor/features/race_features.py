@@ -45,10 +45,9 @@ features/stages.py):
 
 So this one table serves every stage; each stage's model just picks its columns.
 
-Known limitation (deliberately left for later): team rebrands get new ids in
-Jolpica ('alphatauri' -> 'rb', 'alfa' -> 'sauber', 'renault' -> 'alpine'...).
-For now team history restarts after a rebrand. Linking rebrands to one team is
-a possible later improvement.
+Team rebrands get new ids in Jolpica ('alphatauri' -> 'rb', 'renault' ->
+'alpine'...). Features that span seasons group teams by lineage
+(features/teams.py), so a rebrand doesn't wipe a team's history.
 """
 
 import sqlite3
@@ -57,6 +56,7 @@ import pandas as pd
 
 from f1predictor.features.championship import CHAMPIONSHIP_COLUMNS, championship_features
 from f1predictor.features.practice_pace import PRACTICE_PACE_COLUMNS, practice_pace
+from f1predictor.features.teams import lineage
 
 # The model's input columns, in a fixed order. The training code imports this
 # list, so adding a feature here is the only change needed to feed it in.
@@ -190,8 +190,10 @@ def _add_team_features(df: pd.DataFrame) -> pd.DataFrame:
     team["team_season_quali"] = by_team_season["team_quali"].transform(
         lambda s: s.expanding().mean().shift(1))
 
-    # Team history at this circuit: every previous visit, any season.
-    team["team_track_finish"] = team.groupby(["constructor_id", "circuit_id"])["team_finish"] \
+    # Team history at this circuit: every previous visit, any season. Grouped
+    # by LINEAGE so a rebranded team keeps its history (features/teams.py).
+    team["team_lineage"] = team["constructor_id"].map(lineage)
+    team["team_track_finish"] = team.groupby(["team_lineage", "circuit_id"])["team_finish"] \
         .transform(lambda s: s.expanding().mean().shift(1))
 
     # Attach the team numbers back onto each driver's row (both cars get them).
