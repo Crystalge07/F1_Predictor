@@ -1,17 +1,24 @@
 -- =============================================================================
 -- schema.sql: every table in the F1 predictor database (Phase 1: raw data).
 --
+-- Two sources feed it:
+--   * Jolpica (2018+): calendar, race/sprint results, qualifying, drivers, teams
+--   * OpenF1  (2023+): who drove in each session, laps, stints, pit stops,
+--                      weather, race control messages
+--
 -- Conventions used throughout:
 --   * Durations are INTEGER milliseconds, with column names ending in _ms.
 --     Integers are exact and sort correctly; floats of seconds are not exact.
---   * Timestamps are UTC, stored as ISO-8601 text ('2024-03-02T15:00:00Z').
---     We declare them as TIMESTAMP / DATE (standard SQL); SQLite stores the
---     text as-is, and Postgres would store real date types.
+--   * Timestamps are UTC, stored as ISO-8601 text ('2024-03-02T15:00:00Z'),
+--     with column names ending in _utc. We declare them as TIMESTAMP / DATE
+--     (standard SQL); SQLite stores the text as-is, and Postgres would store
+--     real date types.
 --   * IDs from Jolpica (driver_id, constructor_id, circuit_id) are reused as our
---     primary keys, e.g. 'max_verstappen', 'red_bull', 'monza'. They're stable,
---     readable, and they're what FastF1 also exposes, so both sources join on them.
+--     primary keys, e.g. 'max_verstappen', 'red_bull', 'monza'. They're stable
+--     and readable.
 --   * Every statement uses IF NOT EXISTS, so running this file again on an
---     existing database is safe and changes nothing.
+--     existing database is safe and changes nothing. (It also means editing a
+--     table here does NOT change an existing database: rebuild it instead.)
 --
 -- Phase 1 only stores raw facts. Features, predictions and scores get their
 -- own tables in later phases.
@@ -32,11 +39,12 @@ CREATE TABLE IF NOT EXISTS circuits (
     longitude    REAL
 );
 
--- One row per driver. Note: no team column here. A driver's team can change
--- mid-season, so the team is recorded on each result row instead.
+-- One row per driver who has started a race (that's who Jolpica knows).
+-- Note: no team column here. A driver's team can change mid-season, so the
+-- team is recorded on each result / session entry instead.
 CREATE TABLE IF NOT EXISTS drivers (
     driver_id        TEXT PRIMARY KEY,  -- Jolpica id, e.g. 'hamilton'
-    code             TEXT,              -- 3-letter code, e.g. 'HAM' (FastF1 uses this)
+    code             TEXT,              -- 3-letter code, e.g. 'HAM'
     permanent_number INTEGER,           -- e.g. 44 (can be NULL for older/one-off drivers)
     given_name       TEXT NOT NULL,
     family_name      TEXT NOT NULL,
@@ -70,9 +78,9 @@ CREATE TABLE IF NOT EXISTS events (
     name         TEXT NOT NULL,         -- 'Bahrain Grand Prix'
     circuit_id   TEXT NOT NULL REFERENCES circuits (circuit_id),
     race_date    DATE NOT NULL,         -- date of the Sunday (or Saturday) race
-    -- Weekend format, as named by FastF1: 'conventional', 'sprint',
-    -- 'sprint_shootout', 'sprint_qualifying'. Stored rather than hard-coded
-    -- because the PRD says to always read the schedule from the calendar.
+    -- Weekend format: 'conventional', 'sprint', 'sprint_shootout',
+    -- 'sprint_qualifying'. Stored rather than hard-coded because the PRD says
+    -- to always read the schedule from the calendar.
     event_format TEXT,
 
     -- The real-world identity of an event is (season, round). UNIQUE stops us
@@ -86,13 +94,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     event_id       INTEGER NOT NULL REFERENCES events (event_id),
     -- Our own normalized session codes. Different years used confusing names
     -- (in 2021 "Sprint Qualifying" was actually the sprint race), so the
-    -- loader maps every name onto these 7 codes:
+    -- loaders map every name onto these 7 codes:
     --   FP1/FP2/FP3 = practice, SQ = sprint qualifying/shootout,
     --   S = sprint race, Q = qualifying, R = race.
     session_type   TEXT NOT NULL
                    CHECK (session_type IN ('FP1', 'FP2', 'FP3', 'SQ', 'S', 'Q', 'R')),
     session_name   TEXT,                 -- the original name, kept for reference
     start_time_utc TIMESTAMP,            -- scheduled start; the scheduler uses this later
+    -- OpenF1's id for the same session (e.g. 9662), once the OpenF1 loader has
+    -- matched it. NULL before 2023 (OpenF1 has no data) and for future sessions.
+    -- UNIQUE: two of our sessions can never claim the same OpenF1 session.
+    openf1_session_key INTEGER UNIQUE,
 
     -- An event has at most one of each session type.
     UNIQUE (event_id, session_type)
@@ -100,10 +112,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 
 -- -----------------------------------------------------------------------------
--- Session results.
+-- Session results. Source: Jolpica.
 -- -----------------------------------------------------------------------------
 
--- Final classification for race (R) and sprint (S) sessions. Source: Jolpica.
+-- Final classification for race (R) and sprint (S) sessions.
 CREATE TABLE IF NOT EXISTS results (
     session_id     INTEGER NOT NULL REFERENCES sessions (session_id),
     driver_id      TEXT NOT NULL REFERENCES drivers (driver_id),
@@ -122,14 +134,13 @@ CREATE TABLE IF NOT EXISTS results (
     points         REAL NOT NULL DEFAULT 0,   -- REAL because half points exist (Spa 2021)
     laps_completed INTEGER,
     status         TEXT,                -- 'Finished', '+1 Lap', 'Engine', 'Accident', ...
-    race_time_ms   INTEGER,             -- total race time; NULL for non-finishers / lapped cars
+    race_time_ms   INTEGER,             -- total race time; NULL for non-finishers
 
     -- One result per driver per session.
     PRIMARY KEY (session_id, driver_id)
 );
 
--- Qualifying results for Q and SQ sessions.
--- Source: Jolpica for Q; FastF1 for SQ (Jolpica doesn't publish sprint quali).
+-- Qualifying results for Q sessions.
 CREATE TABLE IF NOT EXISTS qualifying (
     session_id     INTEGER NOT NULL REFERENCES sessions (session_id),
     driver_id      TEXT NOT NULL REFERENCES drivers (driver_id),
@@ -144,69 +155,107 @@ CREATE TABLE IF NOT EXISTS qualifying (
 
 
 -- -----------------------------------------------------------------------------
--- Lap-level data. Source: FastF1. Available for every session type.
+-- Who drove in each session. Source: OpenF1 (2023+).
 -- -----------------------------------------------------------------------------
 
+-- One row per car per session: "car #22 ran in this session, the timing
+-- screens called the driver HIR / Ryo HIRAKAWA, and the team McLaren".
+--
+-- Why this table exists: OpenF1 identifies drivers by car number, and some
+-- drivers who set laps (FP1 rookies, debut weekends before Jolpica updates)
+-- aren't in our drivers table. So all lap-level data hangs off this entry
+-- instead of off drivers. driver_id / constructor_id are filled in when we can
+-- match them to Jolpica, and stay NULL when we can't (yet).
+CREATE TABLE IF NOT EXISTS session_entries (
+    session_id     INTEGER NOT NULL REFERENCES sessions (session_id),
+    -- Car numbers are unique within a session, so (session_id, car_number)
+    -- identifies one driver for the whole session.
+    car_number     INTEGER NOT NULL,
+
+    -- Exactly what OpenF1 said, kept as-is. If matching ever goes wrong, this
+    -- is the evidence for fixing it.
+    acronym        TEXT,                -- 'HIR'
+    full_name      TEXT,                -- 'Ryo HIRAKAWA'
+    team_name      TEXT,                -- 'McLaren' (OpenF1's name, not Jolpica's id)
+
+    -- Our matched ids. NULL = not matched (yet). When not NULL, the foreign
+    -- keys guarantee they point at real rows. (In SQL, a NULL foreign key is
+    -- allowed and simply means "no reference".)
+    driver_id      TEXT REFERENCES drivers (driver_id),
+    constructor_id TEXT REFERENCES constructors (constructor_id),
+
+    PRIMARY KEY (session_id, car_number)
+);
+
+
+-- -----------------------------------------------------------------------------
+-- Lap-level data. Source: OpenF1 (2023+). Every table here points at a
+-- session entry via (session_id, car_number).
+-- -----------------------------------------------------------------------------
+
+-- One row per car per lap.
 CREATE TABLE IF NOT EXISTS laps (
-    session_id      INTEGER NOT NULL REFERENCES sessions (session_id),
-    driver_id       TEXT NOT NULL REFERENCES drivers (driver_id),
+    session_id      INTEGER NOT NULL,
+    car_number      INTEGER NOT NULL,
     lap_number      INTEGER NOT NULL,
 
+    lap_start_utc   TIMESTAMP,          -- when the lap began; lines up with weather / race control
     lap_time_ms     INTEGER,            -- NULL when timing failed or the lap wasn't completed
     sector1_ms      INTEGER,
     sector2_ms      INTEGER,
     sector3_ms      INTEGER,
-    -- Session clock time (ms since the session started) when this lap began.
-    -- Lets us match laps to weather samples and track status changes.
-    lap_start_ms    INTEGER,
-
-    -- Tyre information: the raw material for stints and long-run pace.
-    stint           INTEGER,            -- 1, 2, 3... increments after each pit stop
-    compound        TEXT,               -- 'SOFT', 'MEDIUM', 'HARD', 'INTERMEDIATE', 'WET'
-    tyre_life       INTEGER,            -- laps on this set, including laps from earlier sessions
-    fresh_tyre      BOOLEAN,            -- was the set new when fitted?
-
-    is_pit_in_lap   BOOLEAN,            -- driver entered the pits at the end of this lap
     is_pit_out_lap  BOOLEAN,            -- driver left the pits at the start of this lap
-    -- Track status code(s) seen during the lap, e.g. '1' green, '4' safety car,
-    -- '6' virtual SC. Multiple codes can appear ('124'). Used to drop
-    -- non-representative laps when computing pace.
-    track_status    TEXT,
-    is_accurate     BOOLEAN,            -- FastF1's own flag: timing for this lap passed its checks
-    is_deleted      BOOLEAN,            -- lap time deleted by stewards (e.g. track limits)
-    position        INTEGER,            -- running position at the end of the lap (races only)
 
-    PRIMARY KEY (session_id, driver_id, lap_number)
+    -- Speed traps in km/h: two intermediate points and the main speed trap.
+    -- Cheap to keep; possibly useful for track-type / straight-line features.
+    i1_speed_kph    INTEGER,
+    i2_speed_kph    INTEGER,
+    st_speed_kph    INTEGER,
+
+    PRIMARY KEY (session_id, car_number, lap_number),
+    -- A composite foreign key: the (session_id, car_number) PAIR must exist in
+    -- session_entries. So a lap can never belong to a car that wasn't there.
+    FOREIGN KEY (session_id, car_number) REFERENCES session_entries (session_id, car_number)
 );
 
--- Stints: one row per driver per tyre stint. This is a VIEW, i.e. a saved
--- query that behaves like a read-only table. We compute it from laps instead
--- of storing it, so the two can never disagree.
-CREATE VIEW IF NOT EXISTS stints AS
-SELECT
-    session_id,
-    driver_id,
-    stint,
-    -- A stint uses one tyre compound; MAX just picks it (ignores NULLs).
-    MAX(compound)        AS compound,
-    MIN(lap_number)      AS start_lap,
-    MAX(lap_number)      AS end_lap,
-    COUNT(*)             AS lap_count,
-    MIN(tyre_life)       AS tyre_life_at_start,   -- > 1 means a used set
-    MAX(fresh_tyre)      AS fresh_tyre
-FROM laps
-WHERE stint IS NOT NULL
-GROUP BY session_id, driver_id, stint;
+-- One row per tyre stint: a continuous run on one set of tyres.
+CREATE TABLE IF NOT EXISTS stints (
+    session_id        INTEGER NOT NULL,
+    car_number        INTEGER NOT NULL,
+    stint_number      INTEGER NOT NULL,   -- 1, 2, 3... within the session
+    compound          TEXT,               -- 'SOFT', 'MEDIUM', 'HARD', 'INTERMEDIATE', 'WET'
+    lap_start         INTEGER,            -- first lap of the stint
+    lap_end           INTEGER,            -- last lap of the stint
+    -- Laps already on the set when the stint started (0 = new tyres).
+    -- Includes laps from earlier sessions, e.g. a used set from qualifying.
+    tyre_age_at_start INTEGER,
+
+    PRIMARY KEY (session_id, car_number, stint_number),
+    FOREIGN KEY (session_id, car_number) REFERENCES session_entries (session_id, car_number)
+);
+
+-- One row per pit stop.
+CREATE TABLE IF NOT EXISTS pit_stops (
+    session_id     INTEGER NOT NULL,
+    car_number     INTEGER NOT NULL,
+    lap_number     INTEGER NOT NULL,   -- lap the stop happened on
+    stop_time_utc  TIMESTAMP,
+    pit_lane_ms    INTEGER,            -- total time in the pit lane (entry to exit)
+    stationary_ms  INTEGER,            -- time stopped in the box; NULL in older OpenF1 data
+
+    PRIMARY KEY (session_id, car_number, lap_number),
+    FOREIGN KEY (session_id, car_number) REFERENCES session_entries (session_id, car_number)
+);
 
 
 -- -----------------------------------------------------------------------------
--- Conditions during a session. Source: FastF1.
+-- Conditions during a session. Source: OpenF1 (2023+).
 -- -----------------------------------------------------------------------------
 
 -- Weather, sampled about once a minute during each session.
 CREATE TABLE IF NOT EXISTS weather (
     session_id         INTEGER NOT NULL REFERENCES sessions (session_id),
-    sample_ms          INTEGER NOT NULL,   -- session clock time of this sample
+    sample_time_utc    TIMESTAMP NOT NULL,
     air_temp_c         REAL,
     track_temp_c       REAL,
     humidity_pct       REAL,
@@ -215,20 +264,28 @@ CREATE TABLE IF NOT EXISTS weather (
     wind_speed_ms      REAL,               -- metres per second
     wind_direction_deg INTEGER,
 
-    PRIMARY KEY (session_id, sample_ms)
+    PRIMARY KEY (session_id, sample_time_utc)
 );
 
--- Every change in track status: green, yellow, safety car, VSC, red flag.
--- Lets us count safety cars / red flags per race (the "chaos" edge cases).
-CREATE TABLE IF NOT EXISTS track_status (
-    session_id INTEGER NOT NULL REFERENCES sessions (session_id),
-    change_ms  INTEGER NOT NULL,   -- session clock time when the status changed
-    -- '1' green, '2' yellow, '4' safety car, '5' red flag,
-    -- '6' VSC deployed, '7' VSC ending
-    status     TEXT NOT NULL,
-    message    TEXT,               -- e.g. 'SCDeployed', 'AllClear'
+-- Every message from Race Control: flags, safety cars, VSCs, red flags,
+-- penalties, deleted lap times... We store them raw and derive things like
+-- "number of safety cars" with queries later.
+CREATE TABLE IF NOT EXISTS race_control (
+    session_id       INTEGER NOT NULL REFERENCES sessions (session_id),
+    message_time_utc TIMESTAMP NOT NULL,
+    category         TEXT,      -- 'Flag', 'SafetyCar', 'SessionStatus', 'Drs', 'Other'
+    flag             TEXT,      -- 'GREEN', 'YELLOW', 'RED', 'BLUE', 'CHEQUERED'... or NULL
+    scope            TEXT,      -- 'Track', 'Sector', 'Driver'
+    sector           INTEGER,   -- for sector-scoped flags
+    -- Car the message is about, if any. Deliberately NOT a foreign key:
+    -- this is a raw log, and we don't want one odd message to reject the batch.
+    car_number       INTEGER,
+    lap_number       INTEGER,
+    message          TEXT NOT NULL,  -- e.g. 'VIRTUAL SAFETY CAR DEPLOYED'
 
-    PRIMARY KEY (session_id, change_ms, status)
+    -- There's no natural id for a message, so "same session, same time, same
+    -- text" counts as the same message. This lets re-runs skip duplicates.
+    PRIMARY KEY (session_id, message_time_utc, message)
 );
 
 
@@ -238,11 +295,11 @@ CREATE TABLE IF NOT EXISTS track_status (
 
 -- One row per thing we've tried to fetch, with how it went. The backfill reads
 -- this to skip work already done (so it can be stopped and restarted), and
--- the validation step writes failures here instead of crashing.
+-- loaders write failures here instead of crashing.
 CREATE TABLE IF NOT EXISTS ingestion_log (
-    source      TEXT NOT NULL,       -- 'jolpica' or 'fastf1'
-    -- What was fetched, as a readable key, e.g. '2024-05-R' (season-round-session)
-    -- or '2024-schedule'. A text key keeps one table usable for every kind of fetch.
+    source      TEXT NOT NULL,       -- 'jolpica' or 'openf1'
+    -- What was fetched, as a readable key, e.g. '2024-results' or '2024-06-FP1'.
+    -- A text key keeps one table usable for every kind of fetch.
     item_key    TEXT NOT NULL,
     status      TEXT NOT NULL CHECK (status IN ('ok', 'failed', 'skipped')),
     row_count   INTEGER,             -- rows written, as a quick sanity number
@@ -255,13 +312,52 @@ CREATE TABLE IF NOT EXISTS ingestion_log (
 
 
 -- -----------------------------------------------------------------------------
+-- Views: saved queries that behave like read-only tables.
+-- -----------------------------------------------------------------------------
+
+-- Every lap with its driver, team and tyre attached: the joins that nearly
+-- every pace feature needs, written once here instead of in every query.
+CREATE VIEW IF NOT EXISTS laps_detailed AS
+SELECT
+    l.session_id,
+    l.car_number,
+    e.driver_id,              -- NULL for drivers not matched to Jolpica
+    e.constructor_id,
+    e.acronym,
+    l.lap_number,
+    l.lap_start_utc,
+    l.lap_time_ms,
+    l.sector1_ms,
+    l.sector2_ms,
+    l.sector3_ms,
+    l.is_pit_out_lap,
+    st.stint_number,
+    st.compound,
+    -- Tyre age on THIS lap = age when the stint started + laps done since.
+    -- E.g. a stint starting on lap 10 with 3-lap-old tyres: lap 12 -> 3 + 2 = 5.
+    st.tyre_age_at_start + (l.lap_number - st.lap_start) AS tyre_age
+FROM laps AS l
+-- Every lap has an entry (the foreign key guarantees it), so a plain JOIN.
+JOIN session_entries AS e
+    ON e.session_id = l.session_id AND e.car_number = l.car_number
+-- LEFT JOIN: keep the lap even if no stint covers it (OpenF1 occasionally has
+-- gaps); its tyre columns are just NULL.
+LEFT JOIN stints AS st
+    ON st.session_id = l.session_id
+   AND st.car_number = l.car_number
+   AND l.lap_number BETWEEN st.lap_start AND st.lap_end;
+
+
+-- -----------------------------------------------------------------------------
 -- Indexes: speed up the lookups we know we'll do often. (Primary keys and
 -- UNIQUE constraints already get an index automatically.)
 -- -----------------------------------------------------------------------------
 
 -- "All sessions for this event" and "all results for this driver" come up
 -- constantly in feature building (e.g. a driver's last 5 finishes).
-CREATE INDEX IF NOT EXISTS idx_sessions_event   ON sessions (event_id);
-CREATE INDEX IF NOT EXISTS idx_results_driver   ON results (driver_id);
-CREATE INDEX IF NOT EXISTS idx_qualifying_driver ON qualifying (driver_id);
-CREATE INDEX IF NOT EXISTS idx_events_circuit   ON events (circuit_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_event     ON sessions (event_id);
+CREATE INDEX IF NOT EXISTS idx_results_driver     ON results (driver_id);
+CREATE INDEX IF NOT EXISTS idx_qualifying_driver  ON qualifying (driver_id);
+CREATE INDEX IF NOT EXISTS idx_events_circuit     ON events (circuit_id);
+-- "All practice laps for this driver" goes through session_entries.
+CREATE INDEX IF NOT EXISTS idx_entries_driver     ON session_entries (driver_id);
