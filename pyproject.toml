@@ -21,6 +21,10 @@ dependencies = [
     "fastf1>=3.4",     # lap times, stints, weather, track status per session
     "requests>=2.31",  # HTTP client for calling the Jolpica API directly
     "pandas>=2.0",     # FastF1 returns DataFrames; we'll also use it for loading data
+    # Phase 2: the gradient-boosted model. On a Mac it also needs the OpenMP
+    # runtime, installed once with: brew install libomp
+    "xgboost>=2.0",
+    "scikit-learn>=1.3",  # XGBoost's XGBRegressor wrapper is built on scikit-learn
 ]
 
 [project.optional-dependencies]

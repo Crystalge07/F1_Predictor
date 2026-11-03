@@ -38,6 +38,9 @@ DB_PATH: Path = DATA_DIR / "f1.sqlite"
 FASTF1_CACHE_DIR: Path = DATA_DIR / "fastf1_cache"
 
 # Where the SQL file that defines our tables will live (written in Step 2).
+# Trained models are saved here (gitignored with the rest of data/; any model
+# can be rebuilt by rerunning its training script).
+MODELS_DIR: Path = DATA_DIR / "models"
 SCHEMA_PATH: Path = Path(__file__).resolve().parent / "db" / "schema.sql"
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ Requires Python 3.10+.
 python3 -m venv .venv          # create an isolated environment for this project
 source .venv/bin/activate      # activate it (run this in every new terminal)
 pip install -e ".[dev]"        # install the project + dev tools in editable mode
+brew install libomp            # macOS only: the OpenMP runtime XGBoost needs
 ```
 
 ## Layout
