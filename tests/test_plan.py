@@ -1,0 +1,170 @@
+"""Tests for the pipeline planner (pipeline/plan.py), with a fake clock.
+
+A two-round 2027 season. Round 1 (a week earlier) is over and has a result.
+Round 2 is a normal weekend:
+    FP1 Fri 12:00   FP2 Fri 16:00   FP3 Sat 11:00   Q Sat 15:00   R Sun 15:00   (UTC)
+Each test sets the clock and the database state, and checks what plan() asks for.
+"""
+
+from datetime import datetime, timezone
+
+import pytest
+
+from f1predictor.db import ingestion_log
+from f1predictor.db.connection import get_connection, init_db
+from f1predictor.pipeline.plan import plan
+
+WEEKEND = {"FP1": "2027-03-12T12:00:00Z", "FP2": "2027-03-12T16:00:00Z", "FP3": "2027-03-13T11:00:00Z",
+           "Q": "2027-03-13T15:00:00Z", "R": "2027-03-14T15:00:00Z"}
+
+
+def at(text: str) -> datetime:
+    return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def db():
+    c = get_connection(":memory:")
+    init_db(c)
+    c.execute("INSERT INTO circuits (circuit_id, name) VALUES ('x', 'X')")
+    c.execute("INSERT INTO drivers (driver_id, given_name, family_name) VALUES ('a', 'A', 'A')")
+    c.execute("INSERT INTO constructors (constructor_id, name) VALUES ('t', 'T')")
+    ids = {}
+    for rnd, sessions in [(1, {"R": "2027-03-07T15:00:00Z"}), (2, WEEKEND)]:
+        event = c.execute("INSERT INTO events (season, round, name, circuit_id, race_date) "
+                          "VALUES (2027, ?, 'GP', 'x', ?)", (rnd, sessions["R"][:10])).lastrowid
+        ids[rnd] = {"event": event}
+        for kind, start in sessions.items():
+            ids[rnd][kind] = c.execute("INSERT INTO sessions (event_id, session_type, start_time_utc) "
+                                       "VALUES (?, ?, ?)", (event, kind, start)).lastrowid
+    # Round 1 is fully done: result in, OpenF1 fetched.
+    add_result(c, ids[1]["R"])
+    ingestion_log.record(c, "openf1", "2027-01-R", "ok")
+    yield c, ids
+    c.close()
+
+
+@pytest.fixture
+def conn(db):
+    return db[0]
+
+
+@pytest.fixture
+def ids(db):
+    """{round: {'event': event_id, 'FP1': session_id, ...}}"""
+    return db[1]
+
+
+def add_result(c, session_id):
+    c.execute("INSERT INTO results (session_id, driver_id, constructor_id, position, position_text) "
+              "VALUES (?, 'a', 't', 1, '1')", (session_id,))
+
+
+def add_live_run(c, event_id, stage):
+    return c.execute("INSERT INTO prediction_runs (event_id, stage, mode, as_of_utc, created_at_utc, "
+                     "model_version, settings_json) VALUES (?, ?, 'live', 'x', 'x', 'v', '{}')",
+                     (event_id, stage)).lastrowid
+
+
+def fetched(c, *items):
+    for item in items:
+        ingestion_log.record(c, "openf1", f"2027-02-{item}", "ok")
+
+
+def round2(c, now):
+    """What's planned for round 2 (round 1's 'missed' notes are left out)."""
+    return [(a.kind, a.target) for a in plan(c, now) if a.round == 2]
+
+
+def test_monday_after_previous_race_predicts_pre_weekend(conn):
+    assert round2(conn, at("2027-03-08T09:00")) == [("predict", "pre_weekend")]
+
+
+def test_a_logged_stage_is_not_planned_again(conn, ids):
+    add_live_run(conn, ids[2]["event"], "pre_weekend")
+    assert round2(conn, at("2027-03-08T09:00")) == []
+
+
+def test_pre_weekend_waits_for_the_previous_result(conn):
+    conn.execute("DELETE FROM results")
+    assert ("predict", "pre_weekend") not in round2(conn, at("2027-03-08T09:00"))
+
+
+def test_fetch_a_session_once_it_has_ended(conn, ids):
+    add_live_run(conn, ids[2]["event"], "pre_weekend")
+    assert round2(conn, at("2027-03-12T13:00")) == []                      # FP1 just ended: too early
+    assert round2(conn, at("2027-03-12T13:31")) == [("fetch_session", "FP1")]
+    fetched(conn, "FP1")
+    assert round2(conn, at("2027-03-12T13:31")) == []
+
+
+def test_practice_stage_once_all_practice_is_in(conn, ids):
+    add_live_run(conn, ids[2]["event"], "pre_weekend")
+    fetched(conn, "FP1", "FP2", "FP3")
+    assert round2(conn, at("2027-03-13T12:40")) == [("predict", "practice")]
+
+
+def test_practice_stage_last_call_with_a_missing_session(conn, ids):
+    # FP3 never came through (cancelled, or OpenF1 is broken). Practice must
+    # not be blocked by it: at the last call, predict with what there is.
+    add_live_run(conn, ids[2]["event"], "pre_weekend")
+    fetched(conn, "FP1", "FP2")
+    assert round2(conn, at("2027-03-13T14:00")) == [("fetch_session", "FP3")]
+    assert round2(conn, at("2027-03-13T14:20")) == [("fetch_session", "FP3"), ("predict", "practice")]
+
+
+def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
+    event = ids[2]["event"]
+    for stage in ("pre_weekend", "practice"):
+        add_live_run(conn, event, stage)
+    fetched(conn, "FP1", "FP2", "FP3")
+    # Saturday evening: qualifying over, nothing fetched yet.
+    assert round2(conn, at("2027-03-13T16:31")) == [("fetch_session", "Q"), ("fetch_jolpica", "qualifying")]
+    # Qualifying results in, but no starting grid yet: wait...
+    fetched(conn, "Q")
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    assert round2(conn, at("2027-03-14T09:00")) == []
+    # ...until the last call (falls back to qualifying order)...
+    assert round2(conn, at("2027-03-14T14:20")) == [("predict", "post_quali")]
+    # ...or until the grid arrives.
+    fetched(conn, "grid")
+    assert round2(conn, at("2027-03-14T09:00")) == [("predict", "post_quali")]
+
+
+def test_a_stage_whose_cutoff_passed_is_missed_not_predicted_late(conn):
+    # The pipeline was down all weekend: Sunday 16:00, nothing logged.
+    planned = round2(conn, at("2027-03-14T16:00"))
+    assert ("missed", "pre_weekend") in planned and ("missed", "post_quali") in planned
+    assert not any(kind == "predict" for kind, _ in planned)
+
+
+def test_score_once_the_result_is_in(conn, ids):
+    event = ids[2]["event"]
+    for stage in ("pre_weekend", "practice", "post_quali"):
+        add_live_run(conn, event, stage)
+    fetched(conn, "FP1", "FP2", "FP3", "Q", "grid")
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    # Race over (+2h +30m): fetch OpenF1 and Jolpica; no result yet, so no scoring.
+    assert round2(conn, at("2027-03-14T17:31")) == [("fetch_session", "R"), ("fetch_jolpica", "results")]
+    fetched(conn, "R")
+    add_result(conn, ids[2]["R"])
+    assert round2(conn, at("2027-03-14T18:00")) == [("score", "race")]
+
+
+def test_season_opener_is_predicted_within_two_weeks_of_fp1(conn):
+    # Round 1 is the opener: no previous race this season.
+    conn.execute("DELETE FROM prediction_runs")
+    opener = [a for a in plan(conn, at("2027-02-15T09:00")) if a.round == 1]
+    assert opener == []                                            # > 14 days before
+    opener = [(a.kind, a.target) for a in plan(conn, at("2027-02-25T09:00")) if a.round == 1]
+    assert ("predict", "pre_weekend") in opener
+
+
+def test_fetches_come_before_predictions(conn, ids):
+    # Both due at once: the practice prediction needs FP3's data, so fetching goes first.
+    add_live_run(conn, ids[2]["event"], "pre_weekend")
+    fetched(conn, "FP1", "FP2")
+    kinds = [kind for kind, _ in round2(conn, at("2027-03-13T14:20"))]
+    assert kinds == ["fetch_session", "predict"]
