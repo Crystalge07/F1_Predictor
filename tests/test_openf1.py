@@ -229,7 +229,7 @@ def test_ingest_session_loads_rows_and_creates_missing_entries(conn):
     race = add_session(conn, event_id, "R")
     add_result(conn, race, "norris", "NOR", "mclaren", 4)
 
-    rows = openf1.ingest_session(conn, FakeClient(session_payload()), race, SESSION_KEY)
+    rows, _issues = openf1.ingest_session(conn, FakeClient(session_payload()), race, SESSION_KEY)
 
     assert rows == 5   # 1 driver + 2 laps + 1 stint + 1 weather
     entries = conn.execute(

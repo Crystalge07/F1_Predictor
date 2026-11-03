@@ -8,6 +8,7 @@ import pytest
 
 from f1predictor.db.connection import get_connection, init_db
 from f1predictor.ingest import jolpica
+from f1predictor.validate import checks
 
 
 # -----------------------------------------------------------------------------
@@ -119,6 +120,18 @@ def test_fetch_races_merges_a_race_split_across_pages(monkeypatch):
 # Load: end to end into an in-memory database
 # -----------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def allow_tiny_fake_races(monkeypatch):
+    """The fake races below have 2 drivers, far fewer than any real race.
+
+    The validation check `too_few_results` would (correctly) reject them, so
+    for these loader tests we lower its threshold. autouse=True applies this
+    fixture to every test in this file without each test asking for it.
+    The checks themselves are tested in test_checks.py.
+    """
+    monkeypatch.setattr(checks, "MIN_DRIVERS_PER_RESULT", 1)
+
+
 @pytest.fixture
 def conn():
     connection = get_connection(":memory:")
@@ -168,6 +181,24 @@ def test_ingest_season_is_idempotent(conn):
     jolpica.ingest_season(conn, fake_season_client(), 2024)   # run again
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM results").fetchone()[0] == 2
+
+
+def test_validation_error_rolls_back_and_is_recorded(conn):
+    client = fake_season_client()
+    # Both drivers classified 1st: positions aren't 1..N -> error-level issue.
+    client.responses[("2024/results", 0)] = page([{**SCHEDULE_RACE, "Results": [
+        result_row("norris", 1, 5, None),
+        result_row("piastri", 1, 3, None),
+    ]}], total=2)
+
+    outcomes = jolpica.ingest_season(conn, client, 2024)
+
+    assert outcomes["2024-results"] == "failed"
+    assert conn.execute("SELECT COUNT(*) FROM results").fetchone()[0] == 0   # nothing saved
+    issue = conn.execute(
+        "SELECT check_name, severity FROM validation_issues WHERE item_key = '2024-results'"
+    ).fetchone()
+    assert tuple(issue) == ("positions_not_sequential", "error")
 
 
 def test_failed_part_is_logged_and_rolled_back(conn):

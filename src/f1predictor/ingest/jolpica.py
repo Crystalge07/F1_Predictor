@@ -21,6 +21,7 @@ import sqlite3
 from f1predictor import config
 from f1predictor.db import ingestion_log
 from f1predictor.ingest.http import JsonHttpClient
+from f1predictor.validate import checks
 
 logger = logging.getLogger(__name__)
 
@@ -423,9 +424,10 @@ def load_qualifying(conn: sqlite3.Connection, client: JsonHttpClient, season: in
 def ingest_season(conn: sqlite3.Connection, client: JsonHttpClient, season: int) -> dict[str, str]:
     """Load everything Jolpica has for one season, logging each part's outcome.
 
-    Each part runs in its own transaction: if it fails halfway, its partial
-    writes are rolled back, the failure is recorded in ingestion_log, and we
-    move on to the next part instead of crashing ("alert and skip").
+    Each part runs in its own transaction: if it fails halfway, or its
+    validation checks find an error, its writes are rolled back, the failure
+    is recorded in ingestion_log, and we move on to the next part instead of
+    crashing ("alert and skip").
 
     The schedule must load first, since results attach to its sessions. If the
     schedule fails, the remaining parts would fail too, so we stop early.
@@ -433,33 +435,45 @@ def ingest_season(conn: sqlite3.Connection, client: JsonHttpClient, season: int)
     Returns:
         {item_key: status} for each part, e.g. {'2024-schedule': 'ok', ...}.
     """
-    # (item_key, function to call). Lambdas delay the call until we're ready.
+    # (part name, function to call). Lambdas delay the call until we're ready.
     parts = [
-        (f"{season}-schedule",   lambda: load_schedule(conn, client, season)),
-        (f"{season}-results",    lambda: load_results(conn, client, season)),
-        (f"{season}-sprint",     lambda: load_results(conn, client, season, sprint=True)),
-        (f"{season}-qualifying", lambda: load_qualifying(conn, client, season)),
+        ("schedule",   lambda: load_schedule(conn, client, season)),
+        ("results",    lambda: load_results(conn, client, season)),
+        ("sprint",     lambda: load_results(conn, client, season, sprint=True)),
+        ("qualifying", lambda: load_qualifying(conn, client, season)),
     ]
     outcomes: dict[str, str] = {}
 
-    for item_key, load in parts:
+    for part, load in parts:
+        item_key = f"{season}-{part}"
         try:
             # `with conn:` opens a transaction: it COMMITs if the block
             # finishes, and ROLLs BACK if an exception escapes it.
             with conn:
                 row_count = load()
+                # Validate what we just wrote, while it can still be undone.
+                # (This connection sees its own uncommitted rows.) An error
+                # raises ValidationError, which rolls the whole part back.
+                issues = checks.check_jolpica_part(conn, season, part)
+                checks.raise_if_errors(issues)
         except Exception as exc:
             # Deliberately broad: whatever went wrong (network, unexpected
-            # JSON, a constraint violation), we record it and keep going.
-            # The full message is stored for debugging.
+            # JSON, a constraint violation, failed validation), we record it
+            # and keep going. The full message is stored for debugging.
             logger.error("Jolpica %s failed: %s", item_key, exc)
             ingestion_log.record(conn, SOURCE, item_key, "failed", message=str(exc))
+            # getattr(obj, name, default): the issues if it was a
+            # ValidationError, otherwise an empty list.
+            checks.record_issues(conn, SOURCE, item_key, getattr(exc, "issues", []))
             outcomes[item_key] = "failed"
-            if item_key.endswith("schedule"):
+            if part == "schedule":
                 break
         else:
-            logger.info("Jolpica %s: %d rows", item_key, row_count)
-            ingestion_log.record(conn, SOURCE, item_key, "ok", row_count=row_count)
+            logger.info("Jolpica %s: %d rows%s", item_key, row_count,
+                        f" ({checks.summarize(issues)})" if issues else "")
+            ingestion_log.record(conn, SOURCE, item_key, "ok", row_count=row_count,
+                                 message=checks.summarize(issues))
+            checks.record_issues(conn, SOURCE, item_key, issues)
             outcomes[item_key] = "ok"
 
     return outcomes

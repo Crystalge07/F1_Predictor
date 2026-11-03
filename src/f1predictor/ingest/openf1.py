@@ -28,6 +28,7 @@ import requests
 from f1predictor import config
 from f1predictor.db import ingestion_log
 from f1predictor.ingest.http import JsonHttpClient
+from f1predictor.validate import checks
 
 logger = logging.getLogger(__name__)
 
@@ -431,8 +432,14 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
 # 4. LOAD
 # =============================================================================
 
-def ingest_session(conn: sqlite3.Connection, client: JsonHttpClient, session_id: int, session_key: int) -> int:
-    """Fetch and store everything OpenF1 has for one session. Returns rows written.
+def ingest_session(
+    conn: sqlite3.Connection, client: JsonHttpClient, session_id: int, session_key: int
+) -> tuple[int, list[checks.Issue]]:
+    """Fetch, store and validate everything OpenF1 has for one session.
+
+    Returns:
+        (rows written, warning-level issues found). Error-level issues raise
+        ValidationError instead, and nothing is saved.
 
     All six endpoints are fetched BEFORE writing anything. That way a network
     failure halfway through never leaves a half-written session, and the
@@ -535,10 +542,17 @@ def ingest_session(conn: sqlite3.Connection, client: JsonHttpClient, session_id:
 
         matched, unmatched = match_entries(conn, session_id)
 
+        # Validate inside the transaction: an error-level issue raises
+        # ValidationError, which rolls back everything this session wrote.
+        issues = checks.check_openf1_session(conn, session_id)
+        checks.raise_if_errors(issues)
+
     if unmatched:
         logger.info("Session %d: %d car(s) not matched to a Jolpica driver", session_id, unmatched)
 
-    return len(drivers) + len(laps) + len(stints) + len(pits) + len(weather) + len(race_control)
+    row_count = len(drivers) + len(laps) + len(stints) + len(pits) + len(weather) + len(race_control)
+    # Warnings (if any) go back to the caller, which records them.
+    return row_count, issues
 
 
 # =============================================================================
@@ -599,15 +613,20 @@ def ingest_season(
             continue
 
         try:
-            row_count = ingest_session(conn, client, session.session_id, session.session_key)
+            row_count, issues = ingest_session(conn, client, session.session_id, session.session_key)
         except Exception as exc:
             # Alert and skip: record the failure and carry on with the next session.
             logger.error("OpenF1 %s failed: %s", session.item_key, exc)
             ingestion_log.record(conn, SOURCE, session.item_key, "failed", message=str(exc))
+            # The error-level issues, if it was a ValidationError; else none.
+            checks.record_issues(conn, SOURCE, session.item_key, getattr(exc, "issues", []))
             outcomes[session.item_key] = "failed"
         else:
-            logger.info("OpenF1 %s: %d rows", session.item_key, row_count)
-            ingestion_log.record(conn, SOURCE, session.item_key, "ok", row_count=row_count)
+            logger.info("OpenF1 %s: %d rows%s", session.item_key, row_count,
+                        f" ({checks.summarize(issues)})" if issues else "")
+            ingestion_log.record(conn, SOURCE, session.item_key, "ok", row_count=row_count,
+                                 message=checks.summarize(issues))
+            checks.record_issues(conn, SOURCE, session.item_key, issues)
             outcomes[session.item_key] = "ok"
 
     return outcomes

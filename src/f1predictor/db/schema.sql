@@ -310,6 +310,23 @@ CREATE TABLE IF NOT EXISTS ingestion_log (
     PRIMARY KEY (source, item_key)
 );
 
+-- Problems found by the validation checks (validate/checks.py), one row per
+-- issue. Each time an item is validated, its old issues are replaced, so this
+-- always shows the CURRENT problems.
+--   'error'   = data looked broken; the load was rolled back (status 'failed')
+--   'warning' = unusual but saved (e.g. 19 starters instead of 20)
+CREATE TABLE IF NOT EXISTS validation_issues (
+    source      TEXT NOT NULL,       -- same meaning as in ingestion_log
+    item_key    TEXT NOT NULL,       -- which fetch the issue belongs to
+    check_name  TEXT NOT NULL,       -- e.g. 'positions_not_sequential'
+    severity    TEXT NOT NULL CHECK (severity IN ('error', 'warning')),
+    -- The session the issue is about; NULL for season-level checks.
+    -- Not a foreign key: after a rollback, the session may not exist.
+    session_id  INTEGER,
+    detail      TEXT NOT NULL,       -- human-readable explanation
+    found_at    TIMESTAMP NOT NULL
+);
+
 
 -- -----------------------------------------------------------------------------
 -- Views: saved queries that behave like read-only tables.
