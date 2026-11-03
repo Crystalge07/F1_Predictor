@@ -86,3 +86,17 @@ def test_run_without_a_result_is_skipped(conn, weekend):
     conn.execute("DELETE FROM results WHERE session_id = ?", (weekend["R"],))
     assert score_runs(conn) == {}
     assert conn.execute("SELECT COUNT(*) FROM scores WHERE run_id = ?", (run_id,)).fetchone()[0] == 0
+
+
+def test_summary_averages_per_stage_and_never_mixes_modes(conn, weekend):
+    from f1predictor.evaluate.scorer import summary
+    backtest = predict_stage(conn, weekend["event"], "post_quali", n_sims=N_SIMS)
+    live = predict_stage(conn, weekend["event"], "post_quali", mode="live", n_sims=N_SIMS)
+    score_runs(conn, [backtest, live])
+    table = summary(conn, 2024).set_index("metric")
+    assert set(table["stage"]) == {"post_quali"}
+    assert table.loc["position_mae", "races"] == 1          # the live run isn't counted
+    # Baseline MAE 1.5 (see above); improvement is "share better than baseline".
+    mae = table.loc["position_mae"]
+    assert mae["improvement"] == pytest.approx((1.5 - mae["model"]) / 1.5)
+    assert summary(conn, 2024, mode="live").set_index("metric").loc["position_mae", "races"] == 1

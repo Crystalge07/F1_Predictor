@@ -153,7 +153,7 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 1. **Data foundation:** pull Jolpica (2018+) and OpenF1 (2023+) data into the database; backfill 2018–2026; write validation checks.
 2. **Baseline + first model:** grid-order baseline, then a post-qualifying XGBoost model with a time-based split. Original gate: it beats the baseline. **Outcome (2026-11-02): not met as written; gate redefined** (see Decisions made).
 3. **All stages + probabilities:** add pre-weekend and practice-stage models, the Monte Carlo step, and SHAP explanations. **Done 2026-11-03:** probabilities at every stage beat their baselines on held-out races (see Decisions made).
-4. **Backtest:** replay the 2026 season race by race as if live, logging and scoring every prediction. This checks the whole pipeline end to end; because 2026 was used for calibration and looked at repeatedly, its numbers are labelled in-sample, and the 2027 live season is the out-of-sample resume metric (see `docs/evaluation-protocol.md`).
+4. **Backtest:** replay the 2026 season race by race as if live, logging and scoring every prediction. This checks the whole pipeline end to end; because 2026 was used for calibration and looked at repeatedly, its numbers are labelled in-sample, and the 2027 live season is the out-of-sample resume metric (see `docs/evaluation-protocol.md`). **Done 2026-11-03:** `scripts/replay_season.py` predicts, logs and scores all 19 races so far at every stage (57 runs); results in `docs/evaluation-protocol.md`.
 5. **Automation:** scheduler, fetch retries, scorer, and retraining, all hands-off. Gate: a full simulated weekend runs with zero manual steps.
 6. **Dashboard + launch:** the four pages, deployed, live for the 2027 season.
 

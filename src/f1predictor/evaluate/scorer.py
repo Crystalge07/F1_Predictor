@@ -189,3 +189,52 @@ def score_runs(conn: sqlite3.Connection, run_ids: list[int] | None = None) -> di
         if result is not None:
             scored[run_id] = result
     return scored
+
+
+# -----------------------------------------------------------------------------
+# Totals over many races (the scorecard)
+# -----------------------------------------------------------------------------
+
+# Whether a bigger number is better for each metric (for "% better" columns).
+HIGHER_IS_BETTER = {"spearman": True, "winner_hit": True, "podium_hits": True,
+                    "position_mae": False, "brier_win": False, "brier_podium": False}
+
+
+def summary(conn: sqlite3.Connection, season: int, mode: str = "backtest",
+            rounds: tuple[int, int] | None = None) -> pd.DataFrame:
+    """Average of every metric per stage over one season's scored runs.
+
+    One row per (stage, metric): races, model, baseline, baseline_name, and
+    improvement = how much better the model is than the baseline, as a share
+    of the baseline (positive = better, whichever direction the metric runs).
+    rounds=(first, last) limits it to those rounds, e.g. (10, 99).
+
+    Each race counts equally. For the Brier scores that's the same as pooling
+    every driver's row when every race has the same field size (true in 2026:
+    22 cars), and close to it otherwise. Never mixes modes: backtest numbers
+    are in-sample, live ones are the real test (docs/evaluation-protocol.md).
+    """
+    first, last = rounds if rounds is not None else (0, 10_000)
+    table = pd.read_sql_query(
+        """
+        SELECT r.stage, s.metric,
+               COUNT(*)              AS races,
+               AVG(s.model_value)    AS model,
+               AVG(s.baseline_value) AS baseline,
+               MAX(s.baseline_name)  AS baseline_name
+        FROM scores s
+        JOIN prediction_runs r ON r.run_id = s.run_id
+        JOIN events e          ON e.event_id = r.event_id
+        WHERE e.season = ? AND r.mode = ? AND e.round BETWEEN ? AND ?
+        GROUP BY r.stage, s.metric
+        """,
+        conn, params=(season, mode, first, last))
+
+    def improvement(row):
+        if row["metric"] not in HIGHER_IS_BETTER or not row["baseline"]:
+            return float("nan")
+        gain = row["model"] - row["baseline"] if HIGHER_IS_BETTER[row["metric"]] else row["baseline"] - row["model"]
+        return gain / abs(row["baseline"])
+
+    table["improvement"] = table.apply(improvement, axis=1) if not table.empty else []
+    return table

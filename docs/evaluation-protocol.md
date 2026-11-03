@@ -62,6 +62,31 @@ places on calibration, so effectively arbitrary), DNF prior strength 80 and
 driver weight 0.75, post-quali grid weight 0.9 with noise 2.0, pre-weekend and
 practice anchor weight 0.25 with noise 4.0.
 
+## Phase 4: the 2026 replay (in-sample)
+
+`scripts/replay_season.py`, 2026-11-03, rounds 1–19. Each stage predicted
+strictly as if live (`features/as_of.py`), logged, then scored. The baseline
+uses the same information as the model (the as-of grid, not the official
+grid published with the result). Improvement over the baseline, positive =
+better:
+
+| Stage | Races | Places off | Spearman | Win Brier | Podium Brier |
+| --- | --- | --- | --- | --- | --- |
+| Pre-weekend | 19 | +2.8% | −0.1% | −1.9% | +5.6% |
+| Practice | 19 | −1.3% | −2.0% | +2.6% | +5.1% |
+| Post-quali | 19 | −0.6% | +3.3% | −6.7% | +2.8% |
+
+Rounds 10+ only, post-quali: 2.95 places off vs 3.21 for the as-of grid. The
+model number matches the frozen 2.95; the grid is 3.21 instead of 3.25
+because it is the as-of grid. Driver lists: the pre-weekend stage missed
+6 starters and listed 4 non-starters over the season (round 1 and driver
+swaps); practice and post-quali lists were all correct.
+
+Reading: podium probabilities beat the baseline at every stage. Win
+probabilities and finishing order are mixed, and after qualifying the grid's
+win rates are still better than the model's. None of this is a test result
+(rounds 1–9 chose the settings), and no setting was changed in response to it.
+
 ## Experiments tried on 2026-11-03 (separate branches, not merged)
 
 | Branch | Idea | Result |

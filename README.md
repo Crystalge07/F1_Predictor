@@ -2,7 +2,7 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–3 done (data, models for every stage, win/podium probabilities, explanations). Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)). Phase 4 (replaying the 2026 season race by race with every prediction logged) is in progress: the prediction log tables and strict as-of prediction rows are done (each stage only sees what was known at that moment, including the official starting grid from OpenF1 instead of the race result), and `predict/stage.py` predicts one race at one stage and writes it to the log (order, probabilities, every input and its SHAP contribution). The scorer (`evaluate/scorer.py`) grades each logged run after its race against that stage's baseline, built from the same information. The 2026 replay script is next.
+**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. Next: Phase 5, automation.
 
 ## How it works
 
@@ -35,6 +35,16 @@ Held-out races (2025 + 2026 rounds 10+, 34 races). Improvement in Brier score ov
 | Post-quali | starting grid | −1.6% | +2.6% |
 
 After qualifying, the starting grid is very hard to beat. Before qualifying, the models add clear value.
+
+**2026 replay (Phase 4, in-sample).** All 19 races so far, each stage predicted as if live and logged before scoring. Better-than-baseline on the same information:
+
+| Stage | Places off | Win Brier | Podium Brier |
+| --- | --- | --- | --- |
+| Pre-weekend | +2.8% | −1.9% | +5.6% |
+| Practice | −1.3% | +2.6% | +5.1% |
+| Post-quali | −0.6% | −6.7% | +2.8% |
+
+Podium chances beat the baseline at every stage; win chances and finishing order are mixed. 2026 chose the settings and was looked at during development, so these numbers aren't a real test.
 
 **Caveat:** these races were looked at many times during development, so the numbers are somewhat optimistic. The 2027 season, predicted live, is the real test. Details in [docs/evaluation-protocol.md](docs/evaluation-protocol.md).
 
@@ -78,14 +88,23 @@ python scripts/validate.py       # audit the whole database and print a report (
 | `evaluate_probabilities.py` | post-quali win/podium probabilities vs the grid |
 | `evaluate_stage_probabilities.py` | pre-weekend and practice probabilities vs their baselines |
 
-**3. Explain a prediction**
+**3. Replay a season into the prediction log**
+
+```bash
+python scripts/replay_season.py                  # 2026, every race and stage (~2 minutes)
+python scripts/replay_season.py --summary-only   # print the totals again
+```
+
+Deletes the season's earlier backtest runs first, so it can be re-run (live runs can never be deleted).
+
+**4. Explain a prediction**
 
 ```bash
 python scripts/explain_race.py 2026 19                   # post-quali stage
 python scripts/explain_race.py 2026 19 --stage practice
 ```
 
-**4. Look at the results in a browser**
+**5. Look at the results in a browser**
 
 ```bash
 streamlit run app/dashboard.py
