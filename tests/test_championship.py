@@ -102,3 +102,17 @@ def test_training_on_a_stage_feature_list():
     model = train_model(df, columns=PRE_WEEKEND_FEATURES)
     assert list(model.feature_names_in_) == PRE_WEEKEND_FEATURES
     assert predict_order(model, df.iloc[[1, 0]]) == ["good", "bad"]
+
+
+def test_practice_order_fastest_first_no_lap_last():
+    from f1predictor.models.baselines import practice_order
+    race = pd.DataFrame({
+        "driver_id":            ["slow", "fast", "no_lap", "tied_leader", "tied_back"],
+        "short_run_gap_pct":    [1.5, 0.0, float("nan"), 0.8, 0.8],
+        "driver_season_points": [0, 0, 100, 50, 10],
+        "team_season_points":   [0, 0, 100, 50, 10],
+        "prev_season_points":   [0, 0, 0, 0, 0],
+    })
+    # Two drivers tie on 0.8%: the one higher in the championship goes first.
+    # The driver with no practice lap goes last despite leading the championship.
+    assert practice_order(race) == ["fast", "tied_leader", "tied_back", "slow", "no_lap"]

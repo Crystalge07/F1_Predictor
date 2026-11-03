@@ -127,3 +127,19 @@ def championship_order(race: pd.DataFrame) -> list[str]:
         ["driver_season_points", "team_season_points", "prev", "driver_id"],
         ascending=[False, False, False, True])
     return ranked["driver_id"].tolist()
+
+
+def practice_order(race: pd.DataFrame) -> list[str]:
+    """Practice-stage baseline: predict the race finishes in order of best practice lap.
+
+    `race` is one race's rows from the feature table (needs short_run_gap_pct
+    from features/practice_pace.py). Drivers with no practice lap go last;
+    ties (and those drivers) are ordered by championship order, so the result
+    is always complete and always the same.
+    """
+    champ_rank = {d: i for i, d in enumerate(championship_order(race))}
+    ranked = race.assign(
+        no_lap=race["short_run_gap_pct"].isna(),          # False sorts before True
+        champ=race["driver_id"].map(champ_rank),
+    ).sort_values(["no_lap", "short_run_gap_pct", "champ"])
+    return ranked["driver_id"].tolist()
