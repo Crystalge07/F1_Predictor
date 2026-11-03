@@ -34,6 +34,11 @@ dev = [
 # Tell setuptools our package lives under src/ (the "src layout").
 where = ["src"]
 
+[tool.setuptools.package-data]
+# Non-Python files to ship inside the package. Without this, schema.sql would
+# be left out of a regular (non-editable) install.
+f1predictor = ["db/*.sql"]
+
 [tool.pytest.ini_options]
 # Where pytest looks for tests, so `pytest` with no arguments just works.
 testpaths = ["tests"]
