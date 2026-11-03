@@ -38,11 +38,13 @@ from f1predictor.simulate.probabilities import race_probabilities, score_probabi
 STAGES = {"pre_weekend": "champ_rank", "practice": "practice_rank"}
 NOISE_CANDIDATES = [1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
 ANCHOR_WEIGHT_CANDIDATES = [0.0, 0.25, 0.5, 0.75, 1.0]
+NOISE_POWER_CANDIDATES = [0.0, 0.25, 0.5, 0.75, 1.0]   # 0 = same noise for everyone
 LAST_CALIBRATION_ROUND_2026 = 9
 
 
-def simulate_all(races, anchor, weight, noise_sd):
-    return pd.concat([race_probabilities(r, noise_sd=noise_sd, grid_weight=weight, anchor_column=anchor)
+def simulate_all(races, anchor, weight, noise_sd, noise_power):
+    return pd.concat([race_probabilities(r, noise_sd=noise_sd, grid_weight=weight, anchor_column=anchor,
+                                         noise_power=noise_power)
                       for r in races.values()], ignore_index=True)
 
 
@@ -78,20 +80,22 @@ def main() -> None:
         calibrate = {s: predicted[s] for s in calibrate_ids}
         test = {s: predicted[s] for s in test_ids}
 
-        scores = {(w, sd): total_brier(simulate_all(calibrate, anchor, w, sd))
-                  for w in ANCHOR_WEIGHT_CANDIDATES for sd in NOISE_CANDIDATES}
-        best_w, best_sd = min(scores, key=scores.get)
+        scores = {(w, sd, p): total_brier(simulate_all(calibrate, anchor, w, sd, p))
+                  for w in ANCHOR_WEIGHT_CANDIDATES for sd in NOISE_CANDIDATES
+                  for p in NOISE_POWER_CANDIDATES}
+        best_w, best_sd, best_p = min(scores, key=scores.get)
         settings.save(["probabilities", stage],
-                      {"anchor_column": anchor, "anchor_weight": best_w, "noise_sd": best_sd})
-        print(f"  calibrated: anchor weight {best_w}, noise_sd {best_sd} "
-              f"(win + podium Brier {scores[(best_w, best_sd)]:.5f})")
+                      {"anchor_column": anchor, "anchor_weight": best_w, "noise_sd": best_sd,
+                       "noise_power": best_p})
+        print(f"  calibrated: anchor weight {best_w}, noise_sd {best_sd}, noise_power {best_p} "
+              f"(win + podium Brier {scores[(best_w, best_sd, best_p)]:.5f})")
 
         slot = pd.concat([grid_probabilities(features[features.race_date < r.race_date.iloc[0]], r, anchor)
                           for r in test.values()], ignore_index=True)
         rows = {
             "slot baseline": slot,
-            "anchor + sim": simulate_all(test, anchor, 1.0, best_sd),
-            "model": simulate_all(test, anchor, best_w, best_sd),
+            "anchor + sim": simulate_all(test, anchor, 1.0, best_sd, best_p),
+            "model": simulate_all(test, anchor, best_w, best_sd, best_p),
         }
         print(f"  TEST ({len(test_ids)} races)   {'win Brier':>10} {'podium Brier':>13}")
         for name, r in rows.items():

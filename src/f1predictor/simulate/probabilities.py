@@ -21,6 +21,7 @@ from the model's raw numbers was WORSE than the grid-only baseline. Two reasons:
 Also home to the scoring used for probabilities (Brier score per outcome).
 """
 
+import numpy as np
 import pandas as pd
 
 from f1predictor import settings
@@ -37,15 +38,28 @@ from f1predictor.simulate.monte_carlo import N_SIMS, simulate_race
 _post_quali = settings.load()["probabilities"]["post_quali"]
 GRID_WEIGHT: float = _post_quali["anchor_weight"]
 NOISE_SD: float = _post_quali["noise_sd"]
+NOISE_POWER: float = _post_quali["noise_power"]
 
-# Settings per stage: (anchor column, anchor weight, noise_sd). Post-quali is
+# Noise shape. One noise size for the whole field made favourites
+# underconfident (drivers given ~43% to win actually won ~58%): gaps at the
+# front are usually bigger and steadier than in the midfield pack. So each
+# driver's noise scales with where they're expected to run:
+#
+#     driver's noise = noise_sd * (expected position / MIDFIELD) ** noise_power
+#
+# noise_sd is then "the noise for a midfielder"; power 0 = the same for
+# everyone (the original model); power 0.5 = a P1 runner gets ~32% of the
+# midfield noise, a P20 runner ~141%. Power is tuned with the other settings.
+MIDFIELD = 10.0
+
+# Settings per stage: (anchor column, anchor weight, noise_sd, noise_power). Post-quali is
 # the pair above; the other two were chosen by
 # scripts/evaluate_stage_probabilities.py on the same calibration races.
 # Before qualifying there's more uncertainty, so the noise is larger (4.0 vs
 # 2.0), and the anchor gets less weight because the baseline orders are much
 # weaker guides than the real grid.
 STAGE_SETTINGS = {
-    stage: (s["anchor_column"], s["anchor_weight"], s["noise_sd"])
+    stage: (s["anchor_column"], s["anchor_weight"], s["noise_sd"], s["noise_power"])
     for stage, s in settings.load()["probabilities"].items()
 }
 
@@ -72,16 +86,27 @@ def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT,
     return race.assign(expected_position=grid_weight * race[anchor_column] + (1 - grid_weight) * model_order)
 
 
+def driver_noise(expected_position, noise_sd: float, noise_power: float):
+    """Each driver's noise: noise_sd * (expected position / MIDFIELD) ** noise_power.
+
+    Example, noise_sd 2, power 0.5: expected P1 -> 2 * 0.1 ** 0.5 = 0.63 places,
+    P10 -> 2.0, P20 -> 2.83. Power 0 gives every driver exactly noise_sd.
+    """
+    return noise_sd * (np.asarray(expected_position, dtype=float) / MIDFIELD) ** noise_power
+
+
 def race_probabilities(race: pd.DataFrame, noise_sd: float = NOISE_SD,
                        grid_weight: float = GRID_WEIGHT, anchor_column: str = "grid",
+                       noise_power: float = NOISE_POWER,
                        n_sims: int = N_SIMS, seed: int | None = 0) -> pd.DataFrame:
     """Blend with the grid (or another anchor), simulate one race, and attach probabilities."""
     race = blend_with_grid(race, grid_weight, anchor_column)
+    expected = race["expected_position"].to_numpy()
     result = simulate_race(
         race["driver_id"].tolist(),
-        race["expected_position"].to_numpy(),
+        expected,
         race["dnf_prob"].to_numpy(),
-        noise_sd=noise_sd,
+        noise_sd=driver_noise(expected, noise_sd, noise_power),
         n_sims=n_sims,
         seed=seed,
     )

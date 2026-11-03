@@ -89,3 +89,18 @@ def test_add_baseline_ranks():
     assert out["champ_rank"].tolist() == [2, 1, 1, 2]
     assert out["practice_rank"].iloc[:2].tolist() == [1.0, 2.0]
     assert out["practice_rank"].iloc[2:].isna().all()
+
+
+def test_driver_noise_shape():
+    from f1predictor.simulate.probabilities import driver_noise
+    # Power 0: everyone gets exactly noise_sd.
+    assert driver_noise([1, 10, 20], 2.0, 0.0).tolist() == [2.0, 2.0, 2.0]
+    # Power 1: proportional to expected position / 10.
+    assert driver_noise([1, 10, 20], 2.0, 1.0).tolist() == pytest.approx([0.2, 2.0, 4.0])
+
+
+def test_calmer_front_makes_the_favourite_more_likely_to_win():
+    r = race([1.0, 2.0, 3.0, 4.0, 5.0], grid=[1, 2, 3, 4, 5])
+    flat = race_probabilities(r, noise_sd=2.0, grid_weight=1.0, noise_power=0.0)
+    shaped = race_probabilities(r, noise_sd=2.0, grid_weight=1.0, noise_power=1.0)
+    assert shaped.loc[0, "p_win"] > flat.loc[0, "p_win"]

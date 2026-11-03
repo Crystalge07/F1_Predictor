@@ -20,6 +20,8 @@ The two knobs:
     noise_sd   how big the random swings are, in finishing places. Small -> the
                predicted order almost always happens; big -> anything goes. It
                gets calibrated from the model's real past errors (Phase 3 step 3).
+               Either one number for everyone, or one per driver (e.g. calmer
+               at the front, wilder at the back: see simulate/probabilities.py).
                Wet races could later get a larger value (PRD edge case).
     dnf_prob   each driver's chance of not finishing (Phase 3 step 2).
 
@@ -52,7 +54,7 @@ def simulate_race(
     driver_ids: list[str],
     expected_position: np.ndarray | list[float],
     dnf_prob: np.ndarray | list[float],
-    noise_sd: float,
+    noise_sd: float | np.ndarray | list[float],
     n_sims: int = N_SIMS,
     seed: int | None = 0,
 ) -> SimulationResult:
@@ -64,7 +66,9 @@ def simulate_race(
                            (same order as driver_ids). Only the relative
                            values matter: 3.2 vs 3.9 means "slightly ahead".
         dnf_prob:          each driver's chance of retiring, 0..1.
-        noise_sd:          standard deviation of the per-race random swing, in places.
+        noise_sd:          standard deviation of the per-race random swing, in
+                           places: one number, or one per driver (same order
+                           as driver_ids).
         n_sims:            how many races to simulate.
         seed:              fixed by default so the same inputs always give the
                            same probabilities (reproducible tests and logs).
@@ -84,7 +88,13 @@ def simulate_race(
 
     # Shape (n_sims, n_drivers). Adding a 1-D array of length n_drivers to a
     # 2-D array "broadcasts": the same expected positions are added to every row.
-    scores = expected + rng.normal(0.0, noise_sd, size=(n_sims, n_drivers))
+    # noise_sd may be one number or one per driver; as an array of length
+    # n_drivers it broadcasts across the rows just like `expected` does, so
+    # column j gets driver j's own spread.
+    sd = np.asarray(noise_sd, dtype=float)
+    if sd.ndim == 1 and len(sd) != n_drivers:
+        raise ValueError("noise_sd must be one number or one value per driver")
+    scores = expected + rng.normal(0.0, sd, size=(n_sims, n_drivers))
 
     # Who retires in each simulated race: a uniform draw in [0, 1) below the
     # driver's DNF probability. E.g. dnf 0.1 -> True in about 10% of races.

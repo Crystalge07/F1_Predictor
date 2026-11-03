@@ -73,3 +73,17 @@ def test_bad_inputs_raise():
         simulate_race(DRIVERS, [1, 2, 3], [0] * 4, noise_sd=1.0)
     with pytest.raises(ValueError, match="between 0 and 1"):
         simulate_race(DRIVERS, [1, 2, 3, 4], [0, 0, 0, 1.5], noise_sd=1.0)
+
+
+def test_per_driver_noise():
+    # a, b, c have no noise; only d (predicted last) is noisy. So a (predicted
+    # 2nd) can never beat b (1st), and the only winners possible are b or d.
+    result = simulate_race(DRIVERS, [2, 1, 3, 4], [0] * 4, noise_sd=[0.0, 0.0, 0.0, 3.0])
+    assert probs(result, "a")["p_win"] == 0.0
+    assert probs(result, "d")["p_win"] > 0          # d's noise lets it jump ahead sometimes
+    assert probs(result, "b")["p_win"] + probs(result, "d")["p_win"] == pytest.approx(1.0)
+
+
+def test_noise_per_driver_must_match_the_field():
+    with pytest.raises(ValueError, match="one value per driver"):
+        simulate_race(DRIVERS, [1, 2, 3, 4], [0] * 4, noise_sd=[1.0, 2.0])

@@ -39,6 +39,8 @@ import pandas as pd
 
 NOISE_CANDIDATES = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
 GRID_WEIGHT_CANDIDATES = [0.0, 0.25, 0.5, 0.75, 0.9, 1.0]
+# 0 = same noise for every driver; higher = calmer front, wilder back.
+NOISE_POWER_CANDIDATES = [0.0, 0.25, 0.5, 0.75, 1.0]
 LAST_CALIBRATION_ROUND_2026 = 9
 
 
@@ -49,13 +51,14 @@ def position_trainer(history: pd.DataFrame):
 
 
 def simulate_all(races: dict[int, pd.DataFrame], noise_sd: float, grid_weight: float,
-                 flat_dnf: float | None = None) -> pd.DataFrame:
+                 noise_power: float, flat_dnf: float | None = None) -> pd.DataFrame:
     """Probabilities for every race, stacked into one table."""
     out = []
     for race in races.values():
         if flat_dnf is not None:
             race = race.assign(dnf_prob=flat_dnf)
-        out.append(race_probabilities(race, noise_sd=noise_sd, grid_weight=grid_weight))
+        out.append(race_probabilities(race, noise_sd=noise_sd, grid_weight=grid_weight,
+                                      noise_power=noise_power))
     return pd.concat(out, ignore_index=True)
 
 
@@ -83,29 +86,32 @@ def main() -> None:
     calibrate = {s: predicted[s] for s in calibrate_ids}
     test = {s: predicted[s] for s in test_ids}
 
-    # Step 2: pick grid weight + noise together on CALIBRATE. Score = win +
-    # podium Brier, so neither outcome is ignored.
+    # Step 2: pick grid weight + noise size + noise shape together on
+    # CALIBRATE. Score = win + podium Brier, so neither outcome is ignored.
+    combos = [(gw, sd, p) for gw in GRID_WEIGHT_CANDIDATES for sd in NOISE_CANDIDATES
+              for p in NOISE_POWER_CANDIDATES]
     print(f"\nCalibrating on 2024 + 2026 rounds 1-{LAST_CALIBRATION_ROUND_2026} "
-          f"({len(calibrate_ids)} races). Best 5 of {len(GRID_WEIGHT_CANDIDATES) * len(NOISE_CANDIDATES)}:")
+          f"({len(calibrate_ids)} races). Best 5 of {len(combos)}:")
     totals = {}
-    for gw in GRID_WEIGHT_CANDIDATES:
-        for sd in NOISE_CANDIDATES:
-            s = score_probabilities(simulate_all(calibrate, sd, gw))
-            totals[(gw, sd)] = s["brier_win"] + s["brier_podium"]
-    for (gw, sd), total in sorted(totals.items(), key=lambda kv: kv[1])[:5]:
-        print(f"  grid_weight {gw:<4}  noise_sd {sd:<4}  ->  win + podium Brier {total:.5f}")
-    best_gw, best_sd = min(totals, key=totals.get)
+    for gw, sd, p in combos:
+        s = score_probabilities(simulate_all(calibrate, sd, gw, p))
+        totals[(gw, sd, p)] = s["brier_win"] + s["brier_podium"]
+    for (gw, sd, p), total in sorted(totals.items(), key=lambda kv: kv[1])[:5]:
+        print(f"  grid_weight {gw:<4}  noise_sd {sd:<4}  noise_power {p:<4}  ->  win + podium Brier {total:.5f}")
+    best_gw, best_sd, best_p = min(totals, key=totals.get)
     settings.save(["probabilities", "post_quali"],
-                  {"anchor_column": "grid", "anchor_weight": best_gw, "noise_sd": best_sd})
-    print(f"  -> chosen: grid_weight {best_gw}, noise_sd {best_sd} (saved to tuned_settings.json)")
+                  {"anchor_column": "grid", "anchor_weight": best_gw, "noise_sd": best_sd,
+                   "noise_power": best_p})
+    print(f"  -> chosen: grid_weight {best_gw}, noise_sd {best_sd}, noise_power {best_p} "
+          "(saved to tuned_settings.json)")
 
     # Step 3: everything on TEST, once.
     grid = pd.concat([grid_probabilities(features[features.race_date < race.race_date.iloc[0]], race)
                       for race in test.values()], ignore_index=True)
-    model = simulate_all(test, best_sd, best_gw)
-    grid_sim = simulate_all(test, best_sd, grid_weight=1.0)
+    model = simulate_all(test, best_sd, best_gw, best_p)
+    grid_sim = simulate_all(test, best_sd, 1.0, best_p)
     # Flat DNF = the average DNF chance the model handed out over the test races.
-    flat = simulate_all(test, best_sd, best_gw, flat_dnf=float(pd.concat(test.values()).dnf_prob.mean()))
+    flat = simulate_all(test, best_sd, best_gw, best_p, flat_dnf=float(pd.concat(test.values()).dnf_prob.mean()))
 
     print(f"\nTEST: 2025 + 2026 rounds {LAST_CALIBRATION_ROUND_2026 + 1}+ ({len(test_ids)} races)")
     print(f"  {'':<18} {'win Brier':>10} {'podium Brier':>13}")
