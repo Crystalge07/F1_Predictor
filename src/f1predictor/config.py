@@ -67,6 +67,23 @@ SEASONS: list[int] = list(range(FIRST_SEASON, LAST_SEASON + 1))
 #   https://api.jolpi.ca/ergast/f1/2024/results.json
 JOLPICA_BASE_URL: str = "https://api.jolpi.ca/ergast/f1"
 
+# Jolpica's documented limits: about 4 requests/second in bursts, with a hard
+# cap of 200 requests/hour. One request every 0.5s stays under the burst limit;
+# a full 2018-2026 Jolpica backfill is ~120 requests, under the hourly cap.
+JOLPICA_MIN_INTERVAL_S: float = 0.5
+
+# OpenF1: lap-level data (laps, stints, pit stops, weather, race control).
+# Example request: https://api.openf1.org/v1/laps?session_key=9662
+OPENF1_BASE_URL: str = "https://api.openf1.org/v1"
+
+# OpenF1's historical data starts with the 2023 season. Earlier seasons get
+# Jolpica data (results, qualifying) only.
+OPENF1_FIRST_SEASON: int = 2023
+
+# OpenF1's free tier allows 3 requests/second and 30 requests/minute.
+# The per-minute limit is the tighter one: 60s / 30 = one request every 2s.
+OPENF1_MIN_INTERVAL_S: float = 2.0
+
 
 def ensure_data_dirs() -> None:
     """Create the local data folders if they don't exist yet.

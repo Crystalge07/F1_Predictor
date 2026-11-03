@@ -62,16 +62,18 @@ Four pages, starting as a simple web dashboard; a bot or other channels can come
 
 ## Data sources
 
-All sources are free; the pipeline copies what it needs into its own database so nothing is re-downloaded each run.
+All sources used are free; the pipeline copies what it needs into its own database so nothing is re-downloaded each run.
 
 | Source | Used for | Notes |
 | --- | --- | --- |
-| [FastF1](https://github.com/theOehrly/Fast-F1) (Python) | Lap times, tire compound and age, stints, pit stops, track status, weather, telemetry | Main source; data appears after each session, so fetches need retries |
-| [OpenF1](https://github.com/br-g/openf1) | Backup for laps, stints, pit, race control | Historical data free; real-time access is paid, so not used in v1 |
-| Jolpica-F1 | Results, standings, long-term history | Ergast-compatible replacement; can lag a few hours after a race |
+| Jolpica-F1 | Calendar, race and sprint results, qualifying, drivers, constructors (2018+) | Ergast-compatible replacement; can lag a few hours after a race. Limits: ~4 requests/s, 200/hour |
+| [OpenF1](https://github.com/br-g/openf1) | Lap-level data (2023+): laps, stints, pit stops, weather, race control, who drove each session | Main lap-data source. Historical data is free; data during the live window is paid, so we fetch after sessions end. Limits: 3 requests/s, 30/minute. Returns HTTP 404 for "no results" |
+| [FastF1](https://github.com/theOehrly/Fast-F1) (Python) | Not used | Since Oct 2026 (v3.9.0), Formula 1's timing APIs require an F1TV Access subscription, so lap data via FastF1 is no longer free. Could backfill 2018–2022 lap data later if that becomes worthwhile |
 | OpenWeatherMap | Race-day forecast for pre-weekend predictions | Free tier is enough |
 
-**Storage:** start with SQLite or Postgres. Core tables: sessions, laps, stints, results, features (one row per driver per race per stage), predictions (logged with a timestamp and model version), and scores.
+**Coverage consequence:** results and qualifying exist for every season from 2018; lap-level data (and therefore practice-pace features) only from 2023.
+
+**Storage:** SQLite to start, written in standard SQL so it can move to Postgres. Phase 1 tables: circuits, drivers, constructors, events, sessions, results, qualifying, session_entries, laps, stints, pit_stops, weather, race_control, ingestion_log. Later phases add features (one row per driver per race per stage), predictions (logged with a timestamp and model version), and scores.
 
 ## Features and model
 
@@ -83,8 +85,8 @@ One gradient-boosted model (XGBoost or LightGBM) trained on every past race, wit
 | --- | --- |
 | Grid position | After qualifying |
 | Quali gap to pole (%) | After qualifying |
-| FP long-run pace, fuel-corrected | After FP2 |
-| FP short-run pace | After FP1 |
+| FP long-run pace, fuel-corrected | After FP2 (history from 2023 only) |
+| FP short-run pace | After FP1 (history from 2023 only) |
 | Recent form: avg finish, last 3–5 races | Pre-weekend |
 | Team pace this season | Pre-weekend |
 | Driver and team history at this track | Pre-weekend |
@@ -135,6 +137,7 @@ Every prediction is written to the database with a timestamp before the race sta
 These are what make the project technically hard; each needs explicit handling and a test.
 
 - **Rookies and new teams:** no history, so fall back to team pace and junior-series priors
+- **Practice-only drivers (FP1 rookies, debut weekends):** lap data identifies cars by number, and drivers who haven't started a race aren't in Jolpica. Each session has a `session_entries` row per car with a nullable driver id, matched to Jolpica by car number at the same event, then by acronym; teams come from matched teammates
 - **Driver or team swaps mid-season:** features keyed by driver and car separately
 - **Sprint weekends:** different session schedule; read it from the calendar, never hard-code
 - **Wet races, red flags, safety cars:** wider uncertainty in the simulation; weather as a feature
@@ -147,7 +150,7 @@ These are what make the project technically hard; each needs explicit handling a
 
 Build it during the off-season, backtest on the 2026 season, and go live for the first race of 2027.
 
-1. **Data foundation:** pull FastF1 and Jolpica data into the database; backfill several past seasons; write validation checks.
+1. **Data foundation:** pull Jolpica (2018+) and OpenF1 (2023+) data into the database; backfill 2018–2026; write validation checks.
 2. **Baseline + first model:** grid-order baseline, then a post-qualifying XGBoost model with a time-based split. Gate: it beats the baseline.
 3. **All stages + probabilities:** add pre-weekend and practice-stage models, the Monte Carlo step, and SHAP explanations.
 4. **Backtest:** replay the 2026 season race by race as if live, logging and scoring every prediction. This produces the first resume metric.
@@ -160,6 +163,14 @@ Build it during the off-season, backtest on the 2026 season, and go live for the
 - Discord or X bot that posts updated odds after each session
 - LLM-written race previews from the model's top factors
 - Live in-race updates using paid real-time data
+
+**Decisions made**
+
+- **Seasons stored:** backfill 2018–2026 (2018 is the earliest season with lap-level timing). How many of those to *train* on is still open; storing more keeps that choice testable in Phase 2.
+- **Lap data source:** OpenF1 (free, 2023+) instead of FastF1 (now needs a paid F1TV subscription).
+- **Database access:** raw standard SQL with `sqlite3`, no ORM, kept Postgres-compatible.
+- **Telemetry:** not stored; no planned feature needs it.
+- **Drivers without a Jolpica id:** `session_entries` table with nullable driver/team ids (see Edge cases).
 
 **Open questions**
 

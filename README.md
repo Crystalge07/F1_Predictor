@@ -4,6 +4,8 @@ A self-updating F1 prediction system: one model for every Grand Prix, refreshed 
 
 **Status:** Phase 1 (data foundation) in progress.
 
+**Data:** [Jolpica-F1](https://github.com/jolpica/jolpica-f1) for calendar, results and qualifying (2018+); [OpenF1](https://openf1.org) for laps, stints, pit stops, weather and race control (2023+). Stored in SQLite.
+
 ## Setup
 
 Requires Python 3.10+.

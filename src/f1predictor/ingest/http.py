@@ -1,9 +1,10 @@
 """A small HTTP client for JSON APIs: polite rate limiting + retries with backoff.
 
 Why not just call requests.get() directly?
-    1. Rate limits: Jolpica allows roughly 4 requests/second in bursts and
-       500/hour sustained. Firing requests in a tight loop gets us blocked
-       (HTTP 429). So we enforce a minimum gap between requests.
+    1. Rate limits: every API caps how fast we may call it (Jolpica: ~4/second
+       and 200/hour; OpenF1: 3/second and 30/minute; see config.py). Firing
+       requests in a tight loop gets us blocked (HTTP 429). So we enforce a
+       minimum gap between requests.
     2. Flaky networks and servers: a request can fail for reasons that fix
        themselves (timeouts, a 503 while the server restarts). Retrying a few
        times, waiting longer each time, turns most of these into non-events.
@@ -75,8 +76,10 @@ class JsonHttpClient:
         # When the previous request started. None = no request made yet.
         self._last_request_at: float | None = None
 
-    def get_json(self, url: str, params: dict[str, Any] | None = None) -> dict:
+    def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:
         """GET a URL and return the parsed JSON body.
+
+        The body is usually a dict (Jolpica) or a list (OpenF1), hence `Any`.
 
         Retries temporary failures with exponential backoff, and raises
         FetchError if every attempt fails. Raises immediately (no retry) for
