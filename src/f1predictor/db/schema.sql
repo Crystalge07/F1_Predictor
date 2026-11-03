@@ -249,6 +249,26 @@ CREATE TABLE IF NOT EXISTS pit_stops (
 );
 
 
+-- The official starting grid for the race, AFTER penalties. OpenF1 files it
+-- under the QUALIFYING session (its /starting_grid endpoint), so it hangs off
+-- that session's entries like the other OpenF1 tables.
+--
+-- Why we need it although results.grid exists: Jolpica only publishes grid
+-- slots together with the race RESULT, so a prediction made before the race
+-- can't use results.grid without peeking (decision 2026-11-03, strict
+-- backtest). Checked on 2026: this table matched results.grid for 411 of 418
+-- drivers, while plain qualifying order matched only 295.
+-- Pit-lane starters get a normal slot at the back here, not grid 0.
+CREATE TABLE IF NOT EXISTS starting_grid (
+    session_id  INTEGER NOT NULL,      -- the QUALIFYING session
+    car_number  INTEGER NOT NULL,
+    position    INTEGER NOT NULL,      -- 1 = pole, after penalties
+
+    PRIMARY KEY (session_id, car_number),
+    FOREIGN KEY (session_id, car_number) REFERENCES session_entries (session_id, car_number)
+);
+
+
 -- -----------------------------------------------------------------------------
 -- Conditions during a session. Source: OpenF1 (2023+).
 -- -----------------------------------------------------------------------------

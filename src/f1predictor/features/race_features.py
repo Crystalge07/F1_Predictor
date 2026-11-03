@@ -212,7 +212,8 @@ def _add_driver_track_history(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_race_features(conn: sqlite3.Connection) -> pd.DataFrame:
+def build_race_features(conn: sqlite3.Connection,
+                        upcoming: pd.DataFrame | None = None) -> pd.DataFrame:
     """The full training/prediction table for the post-qualifying stage.
 
     Returns one row per driver per race with:
@@ -221,12 +222,32 @@ def build_race_features(conn: sqlite3.Connection) -> pd.DataFrame:
         features:    POST_QUALI_FEATURES
         targets:     finish_position (NaN for retirements: not trained on)
                      actual_position (every driver: used for scoring)
+
+    upcoming (Phase 4): rows for ONE race that is being predicted, in the same
+    columns as load_race_rows() but with no result (actual_position and
+    position_text empty). Any rows the database already has for that race
+    (in a backtest, its real result) are thrown away and replaced by these,
+    BEFORE any feature is computed. So the race's driver list and grid come
+    only from `upcoming` (see features/as_of.py), and its history features are
+    computed by exactly the same code as in training.
     """
     df = load_race_rows(conn)
+    if upcoming is not None:
+        race_ids = upcoming["session_id"].unique()
+        if len(race_ids) != 1:
+            raise ValueError(f"upcoming must hold exactly one race, got sessions {list(race_ids)}")
+        # Keep every row that is NOT from the race being predicted, then add
+        # the upcoming rows in its place.
+        df = pd.concat([df[df["session_id"] != race_ids[0]], upcoming], ignore_index=True)
+        # Back into date order: the running averages below rely on it.
+        df = df.sort_values(["race_date", "session_id", "driver_id"]).reset_index(drop=True)
 
     # The target. position_text is '1', '2', ... for classified finishers and a
     # letter ('R', 'D', 'W', ...) otherwise. str.isdigit() tells them apart.
-    is_classified = df["position_text"].str.isdigit()
+    # Upcoming rows have no position_text at all, so isdigit() gives NaN
+    # there; .eq(True) turns that into False ("no target"), which is right,
+    # since the race hasn't happened.
+    is_classified = df["position_text"].str.isdigit().eq(True)
     # where(cond) keeps values where cond is True and puts NaN elsewhere.
     df["finish_position"] = df["actual_position"].where(is_classified)
 

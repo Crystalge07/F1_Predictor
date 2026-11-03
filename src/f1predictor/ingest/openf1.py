@@ -7,6 +7,7 @@ What OpenF1 gives us, per session (identified by OpenF1's `session_key`):
     /pit           -> pit stops: lap, time in pit lane, stationary time
     /weather       -> one sample per minute
     /race_control  -> flags, safety cars, penalties, deleted laps...
+    /starting_grid -> the race's grid after penalties (qualifying sessions only)
 Plus /sessions?year=YYYY, the season's list of sessions, which we match to the
 sessions Jolpica already created.
 
@@ -569,6 +570,33 @@ def ingest_session(
     return row_count, issues
 
 
+def load_starting_grid(
+    conn: sqlite3.Connection, client: JsonHttpClient, session_id: int, session_key: int
+) -> int:
+    """Fetch and store the starting grid for one QUALIFYING session.
+
+    Kept separate from ingest_session because the grid can appear later than
+    the qualifying laps (penalties are applied after qualifying), so it may
+    need fetching again on its own. Safe to re-run: the session's old grid is
+    replaced in one transaction.
+
+    Returns the number of grid slots stored (0 = OpenF1 has no grid yet).
+    """
+    grid = fetch(client, "starting_grid", session_key=session_key)
+    # Only cars that took part in qualifying (the foreign key would reject
+    # any other car anyway, and fail the whole batch).
+    cars = {row["car_number"] for row in conn.execute(
+        "SELECT car_number FROM session_entries WHERE session_id = ?", (session_id,))}
+    rows = [(session_id, slot["driver_number"], slot["position"])
+            for slot in grid
+            if slot.get("driver_number") in cars and slot.get("position") is not None]
+    with conn:
+        conn.execute("DELETE FROM starting_grid WHERE session_id = ?", (session_id,))
+        conn.executemany(
+            "INSERT INTO starting_grid (session_id, car_number, position) VALUES (?, ?, ?)", rows)
+    return len(rows)
+
+
 # =============================================================================
 # 5. Putting it together
 # =============================================================================
@@ -624,23 +652,50 @@ def ingest_season(
             continue  # hasn't happened (or finished) yet
         if skip_done and ingestion_log.is_done(conn, SOURCE, session.item_key):
             outcomes[session.item_key] = "already done"
-            continue
-
-        try:
-            row_count, issues = ingest_session(conn, client, session.session_id, session.session_key)
-        except Exception as exc:
-            # Alert and skip: record the failure and carry on with the next session.
-            logger.error("OpenF1 %s failed: %s", session.item_key, exc)
-            ingestion_log.record(conn, SOURCE, session.item_key, "failed", message=str(exc))
-            # The error-level issues, if it was a ValidationError; else none.
-            checks.record_issues(conn, SOURCE, session.item_key, getattr(exc, "issues", []))
-            outcomes[session.item_key] = "failed"
         else:
-            logger.info("OpenF1 %s: %d rows%s", session.item_key, row_count,
-                        f" ({checks.summarize(issues)})" if issues else "")
-            ingestion_log.record(conn, SOURCE, session.item_key, "ok", row_count=row_count,
-                                 message=checks.summarize(issues))
-            checks.record_issues(conn, SOURCE, session.item_key, issues)
-            outcomes[session.item_key] = "ok"
+            _ingest_logged(conn, client, session, outcomes)
+
+        # After qualifying: also the official starting grid. Its own log key
+        # ('2024-24-grid'), so a grid that isn't published yet is retried on
+        # the next run without re-fetching the qualifying laps. Only once the
+        # session itself loaded, since the grid hangs off its entries.
+        if session.session_type == "Q" and outcomes[session.item_key] in ("ok", "already done"):
+            grid_key = f"{session.item_key[:-2]}-grid"     # '2024-24-Q' -> '2024-24-grid'
+            if skip_done and ingestion_log.is_done(conn, SOURCE, grid_key):
+                outcomes[grid_key] = "already done"
+                continue
+            try:
+                slots = load_starting_grid(conn, client, session.session_id, session.session_key)
+            except Exception as exc:
+                logger.error("OpenF1 %s failed: %s", grid_key, exc)
+                ingestion_log.record(conn, SOURCE, grid_key, "failed", message=str(exc))
+                outcomes[grid_key] = "failed"
+                continue
+            # 0 slots = not published yet: 'skipped', so it's tried again later.
+            status = "ok" if slots else "skipped"
+            ingestion_log.record(conn, SOURCE, grid_key, status, row_count=slots)
+            outcomes[grid_key] = status
 
     return outcomes
+
+
+def _ingest_logged(conn: sqlite3.Connection, client: JsonHttpClient,
+                   session: MatchedSession, outcomes: dict[str, str]) -> None:
+    """ingest_session for one session, recording the outcome in ingestion_log
+    and in `outcomes`. Failures are logged and skipped, never raised (the
+    PRD's "alert and skip instead of crashing")."""
+    try:
+        row_count, issues = ingest_session(conn, client, session.session_id, session.session_key)
+    except Exception as exc:
+        logger.error("OpenF1 %s failed: %s", session.item_key, exc)
+        ingestion_log.record(conn, SOURCE, session.item_key, "failed", message=str(exc))
+        # The error-level issues, if it was a ValidationError; else none.
+        checks.record_issues(conn, SOURCE, session.item_key, getattr(exc, "issues", []))
+        outcomes[session.item_key] = "failed"
+    else:
+        logger.info("OpenF1 %s: %d rows%s", session.item_key, row_count,
+                    f" ({checks.summarize(issues)})" if issues else "")
+        ingestion_log.record(conn, SOURCE, session.item_key, "ok", row_count=row_count,
+                             message=checks.summarize(issues))
+        checks.record_issues(conn, SOURCE, session.item_key, issues)
+        outcomes[session.item_key] = "ok"

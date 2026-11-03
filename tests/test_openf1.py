@@ -309,3 +309,35 @@ def test_ingest_season_skips_future_and_done_sessions_and_logs_failures(conn):
         "SELECT status, message FROM ingestion_log WHERE item_key = '2024-24-Q'"
     ).fetchone()
     assert log["status"] == "failed" and "no laps" in log["message"]
+
+
+# -----------------------------------------------------------------------------
+# Starting grid (Phase 4: the grid known BEFORE the race)
+# -----------------------------------------------------------------------------
+
+def test_load_starting_grid_keeps_known_cars_and_replaces_old_grid(conn):
+    event_id = add_event(conn, 2024, 24, "2024-12-08")
+    quali = add_session(conn, event_id, "Q")
+    conn.executemany("INSERT INTO session_entries (session_id, car_number) VALUES (?, ?)",
+                     [(quali, 4), (quali, 16)])
+    grid = [
+        {"position": 1, "driver_number": 16, "session_key": 77},
+        {"position": 2, "driver_number": 4, "session_key": 77},
+        {"position": 3, "driver_number": 99, "session_key": 77},   # not in qualifying: dropped
+    ]
+    client = FakeClient({("starting_grid", 77): grid})
+
+    assert openf1.load_starting_grid(conn, client, quali, 77) == 2
+    # Running again (e.g. after a late penalty) replaces, never duplicates.
+    grid[0]["position"], grid[1]["position"] = 2, 1
+    assert openf1.load_starting_grid(conn, client, quali, 77) == 2
+
+    rows = conn.execute("SELECT car_number, position FROM starting_grid ORDER BY position").fetchall()
+    assert [tuple(r) for r in rows] == [(4, 1), (16, 2)]
+
+
+def test_missing_starting_grid_stores_nothing(conn):
+    # OpenF1 answers 404 until the grid is published: that's 0 slots, not an error.
+    event_id = add_event(conn, 2024, 24, "2024-12-08")
+    quali = add_session(conn, event_id, "Q")
+    assert openf1.load_starting_grid(conn, FakeClient({}), quali, 77) == 0
