@@ -14,9 +14,9 @@ import argparse
 
 from f1predictor.db.connection import get_connection
 from f1predictor.explain.contributions import explain_race, top_reasons
-from f1predictor.features.post_quali import build_post_quali_features
+from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
-from f1predictor.models.post_quali import WEIGHT_2026, train_model
+from f1predictor.models.position import WEIGHT_2026, train_model
 
 
 def main() -> None:
@@ -29,7 +29,7 @@ def main() -> None:
 
     conn = get_connection()
     try:
-        features = build_post_quali_features(conn)
+        features = build_race_features(conn)
     finally:
         conn.close()
 

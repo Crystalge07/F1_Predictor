@@ -19,13 +19,13 @@ Finally, the chosen model is retrained on ALL races and saved to
 data/models/post_quali.json for the next phases.
 """
 
-from f1predictor import config
+from f1predictor import config, settings
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.metrics import average_scores, score_race
 from f1predictor.evaluate.walk_forward import walk_forward
-from f1predictor.features.post_quali import FEATURE_COLUMNS, build_post_quali_features
+from f1predictor.features.race_features import POST_QUALI_FEATURES, build_race_features
 from f1predictor.models.baselines import actual_result, grid_order
-from f1predictor.models.post_quali import predict_order, train_model
+from f1predictor.models.position import predict_order, train_model
 
 # Candidate 2026 multipliers. 1 = no extra weight (2026 counts like any season).
 WEIGHT_CANDIDATES = [1, 2, 3, 5, 8, 12]
@@ -59,7 +59,7 @@ def print_comparison(label: str, model: dict, baseline: dict, n_races: int) -> N
 def main() -> None:
     conn = get_connection()
     try:
-        features = build_post_quali_features(conn)
+        features = build_race_features(conn)
         # Race lists for each group, in date order.
         races = (features[["session_id", "season", "round", "race_date"]]
                  .drop_duplicates().sort_values("race_date"))
@@ -89,6 +89,8 @@ def main() -> None:
     # Lowest MAE wins; on an exact tie, min() keeps the first (smallest) weight.
     best_weight = min(WEIGHT_CANDIDATES, key=lambda w: results[w]["position_mae"])
     print(f"  -> chosen 2026 weight: {best_weight}")
+    settings.save(["weight_2026"], float(best_weight))
+    print(f"     saved to tuned_settings.json (review the change with `git diff src/f1predictor/tuned_settings.json`)")
 
     # --- 2. The gate: held-out races, scored once -------------------------------
     trainer = xgb_trainer(best_weight)
@@ -118,7 +120,7 @@ def main() -> None:
     importance = final.get_booster().get_score(importance_type="gain")
     total = sum(importance.values())
     print("Feature importance (share of total gain):")
-    for feature in sorted(FEATURE_COLUMNS, key=lambda f: -importance.get(f, 0)):
+    for feature in sorted(POST_QUALI_FEATURES, key=lambda f: -importance.get(f, 0)):
         print(f"  {feature:<22} {importance.get(feature, 0) / total:>6.1%}")
 
 

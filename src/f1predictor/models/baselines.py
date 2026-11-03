@@ -94,7 +94,7 @@ def grid_probabilities(history: pd.DataFrame, race: pd.DataFrame, slot_column: s
     finish on the podium). E.g. if pole won 104 of 192 earlier races, the
     pole-sitter gets P(win) = 0.54.
 
-    Both arguments are post-quali feature tables (see features/post_quali.py):
+    Both arguments are post-quali feature tables (see features/race_features.py):
         history: rows from races BEFORE this one (the baseline learns from them)
         race:    the rows of the race to forecast
     They need `grid` (pit-lane starts already moved to the back) and

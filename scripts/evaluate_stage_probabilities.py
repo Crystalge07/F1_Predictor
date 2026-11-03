@@ -20,18 +20,19 @@ For each stage:
          anchor + sim      the simulator fed the baseline order only
          model             the full thing
 
-The chosen settings go into simulate/probabilities.STAGE_SETTINGS by hand.
+The chosen settings are saved to tuned_settings.json (see settings.py).
 """
 
 import pandas as pd
 
+from f1predictor import settings
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.walk_forward import walk_forward
-from f1predictor.features.post_quali import build_post_quali_features
+from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
 from f1predictor.models.baselines import add_baseline_ranks, grid_probabilities
 from f1predictor.models.dnf import add_dnf_probability
-from f1predictor.models.post_quali import WEIGHT_2026, predict_positions, train_model
+from f1predictor.models.position import WEIGHT_2026, predict_positions, train_model
 from f1predictor.simulate.probabilities import race_probabilities, score_probabilities
 
 STAGES = {"pre_weekend": "champ_rank", "practice": "practice_rank"}
@@ -53,7 +54,7 @@ def total_brier(rows) -> float:
 def main() -> None:
     conn = get_connection()
     try:
-        features = build_post_quali_features(conn)
+        features = build_race_features(conn)
     finally:
         conn.close()
     features = add_baseline_ranks(features)
@@ -80,6 +81,8 @@ def main() -> None:
         scores = {(w, sd): total_brier(simulate_all(calibrate, anchor, w, sd))
                   for w in ANCHOR_WEIGHT_CANDIDATES for sd in NOISE_CANDIDATES}
         best_w, best_sd = min(scores, key=scores.get)
+        settings.save(["probabilities", stage],
+                      {"anchor_column": anchor, "anchor_weight": best_w, "noise_sd": best_sd})
         print(f"  calibrated: anchor weight {best_w}, noise_sd {best_sd} "
               f"(win + podium Brier {scores[(best_w, best_sd)]:.5f})")
 

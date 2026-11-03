@@ -10,7 +10,7 @@ from f1predictor.db.connection import get_connection, init_db
 from f1predictor.features.championship import championship_features
 from f1predictor.features.stages import PRE_WEEKEND_FEATURES
 from f1predictor.models.baselines import championship_order
-from f1predictor.models.post_quali import predict_order, train_model
+from f1predictor.models.position import predict_order, train_model
 
 
 @pytest.fixture

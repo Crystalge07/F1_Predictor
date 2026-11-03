@@ -1,6 +1,6 @@
 """DNF probabilities: each driver's chance of not finishing, before the race.
 
-The position model (models/post_quali.py) only predicts where a driver
+The position model (models/position.py) only predicts where a driver
 finishes IF they finish. This module supplies the other half: how likely they
 are not to finish at all. The Monte Carlo simulator combines the two.
 
@@ -44,6 +44,8 @@ prior_strength and driver_weight are chosen in scripts/evaluate_dnf.py.
 
 import pandas as pd
 
+from f1predictor import settings
+
 FIELD_WINDOW = 40      # races (all cars) for the background rate (~2 seasons)
 TEAM_WINDOW = 10       # races per team (two cars each -> about 20 starts)
 DRIVER_WINDOW = 20     # races per driver
@@ -57,8 +59,9 @@ DEFAULT_DNF_RATE = 0.10
 # them away from the field rate (someone with 20 races of history keeps 20/100
 # of their own rate and 80/100 of the field's). The best few settings scored
 # within 0.0001 Brier of each other, so these are not finely tuned values.
-PRIOR_STRENGTH = 80.0
-DRIVER_WEIGHT = 0.5
+# The values live in tuned_settings.json (written by scripts/evaluate_dnf.py).
+PRIOR_STRENGTH: float = settings.load()["dnf"]["prior_strength"]
+DRIVER_WEIGHT: float = settings.load()["dnf"]["driver_weight"]
 
 
 def _past_rolling_sum(series: pd.Series, window: int) -> pd.Series:

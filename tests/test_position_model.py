@@ -3,8 +3,8 @@
 import pandas as pd
 
 from f1predictor.evaluate.walk_forward import walk_forward
-from f1predictor.features.post_quali import FEATURE_COLUMNS
-from f1predictor.models.post_quali import predict_order, sample_weights, train_model
+from f1predictor.features.race_features import POST_QUALI_FEATURES
+from f1predictor.models.position import predict_order, sample_weights, train_model
 
 
 def fake_features(races: list[tuple[int, int, str]]) -> pd.DataFrame:
@@ -16,7 +16,7 @@ def fake_features(races: list[tuple[int, int, str]]) -> pd.DataFrame:
     rows = []
     for session_id, season, date in races:
         for driver, pos in (("front", 1), ("back", 2)):
-            row = {f: 0.0 for f in FEATURE_COLUMNS}
+            row = {f: 0.0 for f in POST_QUALI_FEATURES}
             row.update(session_id=session_id, season=season, race_date=date, driver_id=driver,
                        grid=pos, finish_position=float(pos), actual_position=pos)
             rows.append(row)

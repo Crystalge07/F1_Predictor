@@ -11,12 +11,12 @@ model: decision 2026-11-03, "one model per stage", recorded in docs/PRD.md).
                   count too (practice_pace.py reads that from the calendar).
     post-quali    after qualifying: grid + qualifying gap + history     (Phase 2)
 
-All columns come from the one feature table, build_post_quali_features().
+All columns come from the one feature table, build_race_features().
 """
 
 from f1predictor.features.championship import CHAMPIONSHIP_COLUMNS
 from f1predictor.features.practice_pace import PRACTICE_PACE_COLUMNS
-from f1predictor.features.post_quali import FEATURE_COLUMNS as POST_QUALI_FEATURES
+from f1predictor.features.race_features import POST_QUALI_FEATURES
 
 # History features from the post-quali table that are known before the
 # weekend starts (everything except grid / pit lane / qualifying gap).

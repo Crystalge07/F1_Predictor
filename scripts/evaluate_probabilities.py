@@ -26,12 +26,13 @@ Compared on TEST, by Brier score (lower = better):
     model               the full thing
 """
 
+from f1predictor import settings
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.walk_forward import walk_forward
-from f1predictor.features.post_quali import build_post_quali_features
+from f1predictor.features.race_features import build_race_features
 from f1predictor.models.baselines import grid_probabilities
 from f1predictor.models.dnf import add_dnf_probability
-from f1predictor.models.post_quali import WEIGHT_2026, predict_positions, train_model
+from f1predictor.models.position import WEIGHT_2026, predict_positions, train_model
 from f1predictor.simulate.probabilities import race_probabilities, score_probabilities
 
 import pandas as pd
@@ -61,7 +62,7 @@ def simulate_all(races: dict[int, pd.DataFrame], noise_sd: float, grid_weight: f
 def main() -> None:
     conn = get_connection()
     try:
-        features = build_post_quali_features(conn)
+        features = build_race_features(conn)
     finally:
         conn.close()
 
@@ -94,7 +95,9 @@ def main() -> None:
     for (gw, sd), total in sorted(totals.items(), key=lambda kv: kv[1])[:5]:
         print(f"  grid_weight {gw:<4}  noise_sd {sd:<4}  ->  win + podium Brier {total:.5f}")
     best_gw, best_sd = min(totals, key=totals.get)
-    print(f"  -> chosen: grid_weight {best_gw}, noise_sd {best_sd}")
+    settings.save(["probabilities", "post_quali"],
+                  {"anchor_column": "grid", "anchor_weight": best_gw, "noise_sd": best_sd})
+    print(f"  -> chosen: grid_weight {best_gw}, noise_sd {best_sd} (saved to tuned_settings.json)")
 
     # Step 3: everything on TEST, once.
     grid = pd.concat([grid_probabilities(features[features.race_date < race.race_date.iloc[0]], race)

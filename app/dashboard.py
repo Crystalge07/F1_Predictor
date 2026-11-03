@@ -25,13 +25,11 @@ import streamlit as st
 
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.metrics import score_race
-from f1predictor.features.post_quali import build_post_quali_features
+from f1predictor.features.race_features import build_race_features
 from f1predictor.models.baselines import actual_result, grid_order
-from f1predictor.models.post_quali import predict_order, train_model
-
-# The 2026 weight chosen by scripts/train_post_quali.py. If you re-tune it,
-# update it here too.
-WEIGHT_2026 = 3
+# WEIGHT_2026 comes from tuned_settings.json (via models/position.py), so a
+# re-tune updates the dashboard automatically.
+from f1predictor.models.position import WEIGHT_2026, predict_order, train_model
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +44,7 @@ def load_features() -> pd.DataFrame:
     """The full post-quali feature table (one row per driver per race)."""
     conn = get_connection()
     try:
-        return build_post_quali_features(conn)
+        return build_race_features(conn)
     finally:
         conn.close()
 

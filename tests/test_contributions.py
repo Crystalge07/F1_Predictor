@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 
 from f1predictor.explain.contributions import explain_race, top_reasons
-from f1predictor.features.post_quali import FEATURE_COLUMNS
-from f1predictor.models.post_quali import train_model
+from f1predictor.features.race_features import POST_QUALI_FEATURES
+from f1predictor.models.position import train_model
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def trained():
     rows = []
     for race in range(30):
         for grid in range(1, 11):
-            row = {f: float(rng.random()) for f in FEATURE_COLUMNS}   # noise features
+            row = {f: float(rng.random()) for f in POST_QUALI_FEATURES}   # noise features
             row.update(session_id=race, season=2024, driver_id=f"d{grid}",
                        grid=grid, finish_position=float(grid))
             rows.append(row)
@@ -30,7 +30,7 @@ def test_contributions_add_up_to_the_prediction(trained):
     per_driver = explanation.groupby("driver_id").agg(total=("contribution", "sum"),
                                                       baseline=("baseline", "first"),
                                                       predicted=("predicted", "first"))
-    model_says = pd.Series(model.predict(race[FEATURE_COLUMNS]), index=race["driver_id"])
+    model_says = pd.Series(model.predict(race[POST_QUALI_FEATURES]), index=race["driver_id"])
     # baseline + sum of contributions = prediction (the defining SHAP property).
     assert np.allclose(per_driver["baseline"] + per_driver["total"], per_driver["predicted"], atol=1e-4)
     assert np.allclose(per_driver["predicted"], model_says.loc[per_driver.index], atol=1e-4)
@@ -38,7 +38,7 @@ def test_contributions_add_up_to_the_prediction(trained):
 
 def test_one_row_per_driver_per_feature(trained):
     model, race = trained
-    assert len(explain_race(model, race)) == len(race) * len(FEATURE_COLUMNS)
+    assert len(explain_race(model, race)) == len(race) * len(POST_QUALI_FEATURES)
 
 
 def test_top_reason_is_the_feature_that_matters(trained):

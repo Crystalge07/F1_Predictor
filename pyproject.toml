@@ -46,7 +46,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 # Non-Python files to ship inside the package. Without this, schema.sql would
 # be left out of a regular (non-editable) install.
-f1predictor = ["db/*.sql"]
+f1predictor = ["db/*.sql", "tuned_settings.json"]
 
 [tool.pytest.ini_options]
 # Where pytest looks for tests, so `pytest` with no arguments just works.

@@ -21,10 +21,10 @@ import pandas as pd
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.metrics import average_scores, score_race
 from f1predictor.evaluate.walk_forward import walk_forward
-from f1predictor.features.post_quali import build_post_quali_features
+from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import PRACTICE_FEATURES, PRE_WEEKEND_FEATURES
 from f1predictor.models.baselines import actual_result, championship_order, grid_order, practice_order
-from f1predictor.models.post_quali import WEIGHT_2026, predict_order, train_model
+from f1predictor.models.position import WEIGHT_2026, predict_order, train_model
 
 
 def stage_trainer(columns: list[str]):
@@ -38,7 +38,7 @@ def stage_trainer(columns: list[str]):
 def main() -> None:
     conn = get_connection()
     try:
-        features = build_post_quali_features(conn)
+        features = build_race_features(conn)
         sessions = features[["session_id", "season"]].drop_duplicates()
         test_ids = sessions[sessions.season >= 2024].session_id.tolist()
         actuals = {s: actual_result(conn, s) for s in test_ids}

@@ -18,8 +18,9 @@ Baselines to beat:
 
 from itertools import product
 
+from f1predictor import settings
 from f1predictor.db.connection import get_connection
-from f1predictor.features.post_quali import build_post_quali_features
+from f1predictor.features.race_features import build_race_features
 from f1predictor.models.dnf import add_dnf_probability, brier
 
 PRIOR_STRENGTHS = [5, 10, 20, 40, 80, 160]
@@ -29,7 +30,7 @@ DRIVER_WEIGHTS = [0.0, 0.25, 0.5, 0.75, 1.0]   # 0 = team only, 1 = driver only
 def main() -> None:
     conn = get_connection()
     try:
-        features = build_post_quali_features(conn)
+        features = build_race_features(conn)
     finally:
         conn.close()
 
@@ -45,6 +46,8 @@ def main() -> None:
     for score, k, w in results[:5]:
         print(f"  prior_strength {k:>3}  driver_weight {w:.2f}  ->  {score:.5f}")
     _, best_k, best_w = results[0]
+    settings.save(["dnf"], {"prior_strength": float(best_k), "driver_weight": float(best_w)})
+    print(f"  saved to tuned_settings.json (review the change with `git diff src/f1predictor/tuned_settings.json`)")
 
     # Baselines and the chosen model, on CHOOSE and TEST.
     df = add_dnf_probability(features, prior_strength=best_k, driver_weight=best_w)

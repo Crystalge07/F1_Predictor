@@ -1,0 +1,24 @@
+{
+  "weight_2026": 3.0,
+  "dnf": {
+    "prior_strength": 80.0,
+    "driver_weight": 0.5
+  },
+  "probabilities": {
+    "pre_weekend": {
+      "anchor_column": "champ_rank",
+      "anchor_weight": 0.5,
+      "noise_sd": 4.0
+    },
+    "practice": {
+      "anchor_column": "practice_rank",
+      "anchor_weight": 0.25,
+      "noise_sd": 4.0
+    },
+    "post_quali": {
+      "anchor_column": "grid",
+      "anchor_weight": 0.75,
+      "noise_sd": 2.0
+    }
+  }
+}

@@ -1,7 +1,7 @@
 """The post-qualifying XGBoost model: predict finishing order from Saturday's info.
 
 What it learns: a regressor that, given one driver's features (see
-features/post_quali.py), predicts their finishing position *if they finish*.
+features/race_features.py), predicts their finishing position *if they finish*.
 Retirements have no target and are skipped in training (DNF risk is the Monte
 Carlo step's job in Phase 3).
 
@@ -18,14 +18,17 @@ more. The multiplier is tuned in scripts/train_post_quali.py.
 import pandas as pd
 import xgboost as xgb
 
-from f1predictor.features.post_quali import FEATURE_COLUMNS
+from f1predictor import settings
+
+from f1predictor.features.race_features import POST_QUALI_FEATURES
 
 # The first season of the new regulations, whose rows get the extra weight.
 REGULATION_RESET_SEASON = 2026
 
-# The 2026 multiplier chosen by scripts/train_post_quali.py (2026-11-02). Every
-# value from 1 to 12 scored within 0.04 places, so it barely matters yet.
-WEIGHT_2026 = 3.0
+# The 2026 multiplier, chosen by scripts/train_post_quali.py and stored in
+# tuned_settings.json (see settings.py). On 2026-11-02 every value from 1 to
+# 12 scored within 0.04 places, so it barely matters yet.
+WEIGHT_2026: float = settings.load()["weight_2026"]
 
 # XGBoost settings. Deliberately conservative: we only have ~3,300 training
 # rows, and a big, deep model would memorise noise (overfit).
@@ -54,7 +57,7 @@ def sample_weights(train: pd.DataFrame, weight_2026: float) -> pd.Series:
 
 
 def train_model(train: pd.DataFrame, weight_2026: float = 1.0,
-                columns: list[str] = FEATURE_COLUMNS) -> xgb.XGBRegressor:
+                columns: list[str] = POST_QUALI_FEATURES) -> xgb.XGBRegressor:
     """Fit the model on feature rows. Rows without a target (retirements) are dropped.
 
     `columns` picks the features: the post-quali ones by default; other stages

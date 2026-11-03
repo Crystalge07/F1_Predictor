@@ -10,7 +10,7 @@ import math
 import pytest
 
 from f1predictor.db.connection import get_connection, init_db
-from f1predictor.features.post_quali import FEATURE_COLUMNS, build_post_quali_features
+from f1predictor.features.race_features import POST_QUALI_FEATURES, build_race_features
 
 
 @pytest.fixture
@@ -70,21 +70,21 @@ def standard_season(conn):
 
 def test_one_row_per_driver_per_race_with_all_columns(conn):
     standard_season(conn)
-    df = build_post_quali_features(conn)
+    df = build_race_features(conn)
     assert len(df) == 12
-    assert set(FEATURE_COLUMNS) <= set(df.columns)
+    assert set(POST_QUALI_FEATURES) <= set(df.columns)
 
 
 def test_retirements_have_no_target_but_keep_actual_position(conn):
     _, r2, _ = standard_season(conn)
-    b = row(build_post_quali_features(conn), r2, "b")
+    b = row(build_race_features(conn), r2, "b")
     assert math.isnan(b["finish_position"])     # not trained on
     assert b["actual_position"] == 4            # still scored
 
 
 def test_quali_gap_to_pole(conn):
     r1, _, _ = standard_season(conn)
-    df = build_post_quali_features(conn)
+    df = build_race_features(conn)
     assert row(df, r1, "a")["quali_gap_pct"] == 0.0                     # pole
     assert row(df, r1, "b")["quali_gap_pct"] == pytest.approx(1.0)      # 80.8 / 80.0 = 1% slower
 
@@ -95,28 +95,28 @@ def test_best_quali_lap_uses_fastest_segment(conn):
     conn.execute("UPDATE qualifying SET q2_ms = 79000 WHERE driver_id = 'c' "
                  "AND session_id = (SELECT session_id FROM sessions WHERE event_id = "
                  "(SELECT event_id FROM sessions WHERE session_id = ?) AND session_type = 'Q')", (r1,))
-    df = build_post_quali_features(conn)
+    df = build_race_features(conn)
     assert row(df, r1, "c")["quali_gap_pct"] == 0.0
     assert row(df, r1, "a")["quali_gap_pct"] == pytest.approx((80_000 / 79_000 - 1) * 100)
 
 
 def test_pit_lane_start_goes_to_the_back(conn):
     _, _, r3 = standard_season(conn)
-    d = row(build_post_quali_features(conn), r3, "d")
+    d = row(build_race_features(conn), r3, "d")
     assert d["pit_lane_start"] == 1
     assert d["grid"] == 4                       # 4-car field: back of the grid, not "0 = pole"
 
 
 def test_first_race_has_no_history(conn):
     r1, _, _ = standard_season(conn)
-    a = row(build_post_quali_features(conn), r1, "a")
+    a = row(build_race_features(conn), r1, "a")
     for feature in ("driver_form_finish", "team_season_finish", "driver_track_finish"):
         assert math.isnan(a[feature])
 
 
 def test_driver_form_skips_retirements(conn):
     _, _, r3 = standard_season(conn)
-    df = build_post_quali_features(conn)
+    df = build_race_features(conn)
     # 'a' finished 1st and 3rd before race 3 -> 2.0.
     assert row(df, r3, "a")["driver_form_finish"] == 2.0
     # 'b' finished 2nd, then retired: only the finish counts -> 2.0.
@@ -127,7 +127,7 @@ def test_driver_form_skips_retirements(conn):
 
 def test_team_season_pace_resets_each_season(conn):
     _, r2, r3 = standard_season(conn)
-    df = build_post_quali_features(conn)
+    df = build_race_features(conn)
     # Race 2: red's race-1 average finish was (1 + 2) / 2 = 1.5.
     assert row(df, r2, "a")["team_season_finish"] == 1.5
     assert row(df, r2, "b")["team_season_quali"] == 1.5
@@ -137,7 +137,7 @@ def test_team_season_pace_resets_each_season(conn):
 
 def test_track_history_spans_seasons(conn):
     _, _, r3 = standard_season(conn)
-    df = build_post_quali_features(conn)
+    df = build_race_features(conn)
     # Back at Monza in 2025: c finished 3rd there in 2024. Spa doesn't count.
     assert row(df, r3, "c")["driver_track_finish"] == 3.0
     # Blue at Monza 2024: (3 + 4) / 2 = 3.5.
@@ -147,12 +147,12 @@ def test_track_history_spans_seasons(conn):
 def test_no_leakage_from_the_race_being_predicted(conn):
     """Shuffling race 3's finishing order must not change race 3's features."""
     _, _, r3 = standard_season(conn)
-    before = build_post_quali_features(conn)
+    before = build_race_features(conn)
     conn.execute("UPDATE results SET position = 5 - position, position_text = CAST(5 - position AS TEXT) "
                  "WHERE session_id = ?", (r3,))
-    after = build_post_quali_features(conn)
+    after = build_race_features(conn)
 
     for driver in ("a", "b", "c", "d"):
-        for feature in FEATURE_COLUMNS:
+        for feature in POST_QUALI_FEATURES:
             x, y = row(before, r3, driver)[feature], row(after, r3, driver)[feature]
             assert (math.isnan(x) and math.isnan(y)) or x == y, f"{driver} {feature} leaked"

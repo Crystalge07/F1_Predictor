@@ -1,7 +1,7 @@
 """Race probabilities: model + DNF chances + Monte Carlo, glued together.
 
 Inputs for one race (the feature rows, plus two extra columns):
-    expected_position   from the position model (models/post_quali.predict_positions)
+    expected_position   from the position model (models/position.predict_positions)
     dnf_prob            from the DNF model (models/dnf.add_dnf_probability)
 
 Before simulating, the model's prediction is blended with the starting grid
@@ -23,6 +23,8 @@ Also home to the scoring used for probabilities (Brier score per outcome).
 
 import pandas as pd
 
+from f1predictor import settings
+
 from f1predictor.models.dnf import brier
 from f1predictor.simulate.monte_carlo import N_SIMS, simulate_race
 
@@ -31,8 +33,10 @@ from f1predictor.simulate.monte_carlo import N_SIMS, simulate_race
 # GRID_WEIGHT: how much of the simulator's starting point is the grid (1.0 =
 #   ignore the model entirely, 0.0 = ignore the grid).
 # NOISE_SD: how big the simulated race-day swings are, in finishing places.
-GRID_WEIGHT = 0.75
-NOISE_SD = 2.0
+# The values live in tuned_settings.json (see settings.py).
+_post_quali = settings.load()["probabilities"]["post_quali"]
+GRID_WEIGHT: float = _post_quali["anchor_weight"]
+NOISE_SD: float = _post_quali["noise_sd"]
 
 # Settings per stage: (anchor column, anchor weight, noise_sd). Post-quali is
 # the pair above; the other two were chosen by
@@ -41,9 +45,8 @@ NOISE_SD = 2.0
 # 2.0), and the anchor gets less weight because the baseline orders are much
 # weaker guides than the real grid.
 STAGE_SETTINGS = {
-    "pre_weekend": ("champ_rank", 0.5, 4.0),
-    "practice": ("practice_rank", 0.25, 4.0),
-    "post_quali": ("grid", GRID_WEIGHT, NOISE_SD),
+    stage: (s["anchor_column"], s["anchor_weight"], s["noise_sd"])
+    for stage, s in settings.load()["probabilities"].items()
 }
 
 

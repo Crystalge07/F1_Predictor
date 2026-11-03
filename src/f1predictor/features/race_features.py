@@ -37,7 +37,7 @@ don't invent fake values for rookies or round 1):
     driver_track_finish      driver's avg finish at this circuit in past seasons
     team_track_finish        team's avg finish at this circuit in past seasons
 
-Also on every row, but NOT in FEATURE_COLUMNS (used by other stages, see
+Also on every row, but NOT in POST_QUALI_FEATURES (used by other stages, see
 features/stages.py):
     long_run_gap_pct         practice race pace, % off the best car (2023+; see practice_pace.py)
     short_run_gap_pct        best practice lap, % off the fastest (2023+)
@@ -60,7 +60,7 @@ from f1predictor.features.practice_pace import PRACTICE_PACE_COLUMNS, practice_p
 
 # The model's input columns, in a fixed order. The training code imports this
 # list, so adding a feature here is the only change needed to feed it in.
-FEATURE_COLUMNS = [
+POST_QUALI_FEATURES = [
     "grid",
     "pit_lane_start",
     "quali_gap_pct",
@@ -210,13 +210,13 @@ def _add_driver_track_history(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_post_quali_features(conn: sqlite3.Connection) -> pd.DataFrame:
+def build_race_features(conn: sqlite3.Connection) -> pd.DataFrame:
     """The full training/prediction table for the post-qualifying stage.
 
     Returns one row per driver per race with:
         id columns:  session_id, season, round, race_date, circuit_id,
                      driver_id, constructor_id
-        features:    FEATURE_COLUMNS
+        features:    POST_QUALI_FEATURES
         targets:     finish_position (NaN for retirements: not trained on)
                      actual_position (every driver: used for scoring)
     """
@@ -240,7 +240,7 @@ def build_post_quali_features(conn: sqlite3.Connection) -> pd.DataFrame:
 
     id_columns = ["session_id", "season", "round", "race_date", "circuit_id",
                   "driver_id", "constructor_id"]
-    return (df[id_columns + FEATURE_COLUMNS + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS
+    return (df[id_columns + POST_QUALI_FEATURES + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS
                + ["finish_position", "actual_position"]]
             .sort_values(["race_date", "session_id", "grid"])
             .reset_index(drop=True))
