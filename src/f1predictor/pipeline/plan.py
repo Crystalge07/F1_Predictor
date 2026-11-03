@@ -17,12 +17,15 @@ never fetches or writes anything, so it's easy to test with a fake clock.
 
 The actions, in the order a weekend produces them:
 
-    fetch_session   OpenF1 data for a session that has ended (+ FETCH_DELAY)
+    fetch_session   OpenF1 data for a session that has ended (+ FETCH_DELAY),
+                    or (target 'grid') the starting grid once qualifying is in
     fetch_jolpica   Jolpica results/qualifying, once qualifying or the race
                     has ended and its rows aren't in yet
     predict         a live prediction for a stage, once its inputs are in and
                     before its cutoff (features/as_of.stage_cutoff)
     score           a race's logged runs, once the result is in
+    gave_up         informational: a session's data still isn't in GIVE_UP
+                    after it was ready; it's no longer retried.
     missed          informational: a stage's cutoff passed with no live run,
                     after live predicting started (the first live run).
                     Nothing is done about it: a "live" prediction made after
@@ -59,6 +62,10 @@ SESSION_LENGTH = {
 FETCH_DELAY = timedelta(minutes=30)
 # How close to a cutoff a stage is predicted with whatever data exists.
 LAST_CALL = timedelta(minutes=45)
+# How long to keep retrying a session's OpenF1 data after it should have
+# been ready. Practice stages don't wait for it anyway (LAST_CALL); this just
+# stops a session OpenF1 never publishes from being retried for days.
+GIVE_UP = timedelta(hours=24)
 # Round 1 has no previous race this season: predict it within this long of FP1.
 PRE_SEASON_WINDOW = timedelta(days=14)
 # Which events the planner looks at: those whose race is within this window
@@ -71,7 +78,7 @@ LOOK_AHEAD = timedelta(days=14)
 @dataclass(frozen=True)
 class Action:
     """One thing the tick should do. frozen=True: actions can't be changed after creation."""
-    kind: str                    # 'fetch_session', 'fetch_jolpica', 'predict', 'score', 'missed'
+    kind: str                    # 'fetch_session', 'fetch_jolpica', 'predict', 'score', 'gave_up', 'missed'
     event_id: int
     season: int
     round: int
@@ -180,8 +187,20 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
         # --- Fetching ---------------------------------------------------------
         for session_type, start in sorted(starts.items(), key=lambda kv: kv[1]):
             ready_at = start + SESSION_LENGTH.get(session_type, timedelta(hours=2)) + FETCH_DELAY
-            if now >= ready_at and not _openf1_done(conn, season, rnd, session_type):
+            if now < ready_at or _openf1_done(conn, season, rnd, session_type):
+                continue
+            if now < ready_at + GIVE_UP:
                 act("fetch_session", session_type, f"{session_type} ended; OpenF1 data not in yet")
+            else:
+                # Tried every tick for a day: stop, and say so once per tick
+                # instead of hammering the API until LOOK_BACK runs out.
+                act("gave_up", session_type, f"no OpenF1 data {GIVE_UP} after it was ready")
+        # The starting grid: published after qualifying (penalties can change
+        # it), so it's fetched on its own once qualifying is in, and retried
+        # every tick until it appears or the race starts.
+        if ("Q" in starts and "R" in starts and now < starts["R"]
+                and _openf1_done(conn, season, rnd, "Q") and not _openf1_done(conn, season, rnd, "grid")):
+            act("fetch_session", "grid", "qualifying is in; starting grid not published yet")
         # Jolpica parts: (session, table its rows land in, part name). Sprint
         # results live in `results` under the sprint session (ingest/jolpica.py).
         for session_type, table, part in [("Q", "qualifying", "qualifying"), ("S", "results", "sprint"),
@@ -231,6 +250,6 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             if unscored:
                 act("score", "race", f"result is in; {unscored} logged run(s) not scored")
 
-    order = {"fetch_session": 0, "fetch_jolpica": 1, "predict": 2, "score": 3, "missed": 4}
+    order = {"fetch_session": 0, "fetch_jolpica": 1, "predict": 2, "score": 3, "gave_up": 4, "missed": 5}
     # sorted() is stable: within a kind, the calendar order above is kept.
     return sorted(actions, key=lambda a: order[a.kind])

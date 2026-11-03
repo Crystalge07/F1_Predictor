@@ -124,9 +124,10 @@ def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
     fetched(conn, "Q")
     conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
                  "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
-    assert round2(conn, at("2027-03-14T09:00")) == []
+    # (but keep asking OpenF1 for the grid)...
+    assert round2(conn, at("2027-03-14T09:00")) == [("fetch_session", "grid")]
     # ...until the last call (falls back to qualifying order)...
-    assert round2(conn, at("2027-03-14T14:20")) == [("predict", "post_quali")]
+    assert round2(conn, at("2027-03-14T14:20")) == [("fetch_session", "grid"), ("predict", "post_quali")]
     # ...or until the grid arrives.
     fetched(conn, "grid")
     assert round2(conn, at("2027-03-14T09:00")) == [("predict", "post_quali")]
@@ -175,3 +176,24 @@ def test_fetches_come_before_predictions(conn, ids):
 def test_races_before_going_live_are_never_missed(conn):
     # No live run has ever been made (e.g. the backtested past): nothing is "missed".
     assert not any(a.kind == "missed" for a in plan(conn, at("2027-03-14T16:00")))
+
+
+def test_starting_grid_is_fetched_on_its_own_after_qualifying(conn, ids):
+    for stage in ("pre_weekend", "practice"):
+        add_live_run(conn, ids[2]["event"], stage)
+    fetched(conn, "FP1", "FP2", "FP3", "Q")
+    assert ("fetch_session", "grid") in round2(conn, at("2027-03-13T17:00"))
+    fetched(conn, "grid")
+    assert ("fetch_session", "grid") not in round2(conn, at("2027-03-13T17:00"))
+
+
+def test_grid_is_not_chased_after_the_race_starts(conn, ids):
+    fetched(conn, "FP1", "FP2", "FP3", "Q")
+    assert ("fetch_session", "grid") not in round2(conn, at("2027-03-14T15:30"))
+
+
+def test_a_session_that_never_arrives_is_given_up_after_a_day(conn, ids):
+    add_live_run(conn, ids[2]["event"], "pre_weekend")
+    # FP1 ready at 13:30 Friday; still nothing on Saturday 14:00.
+    planned = round2(conn, at("2027-03-13T14:00"))
+    assert ("gave_up", "FP1") in planned and ("fetch_session", "FP1") not in planned

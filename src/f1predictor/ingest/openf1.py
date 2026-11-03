@@ -608,6 +608,8 @@ def ingest_season(
     rounds: set[int] | None = None,
     skip_done: bool = True,
     now: datetime | None = None,
+    session_types: set[str] | None = None,
+    settle_hours: float = SESSION_SETTLE_HOURS,
 ) -> dict[str, str]:
     """Load all finished sessions of a season from OpenF1, logging each one.
 
@@ -619,6 +621,12 @@ def ingest_season(
         skip_done: Skip sessions already logged as 'ok'. This is what lets an
             interrupted backfill resume instead of starting over.
         now: The current time. Tests pass a fixed value; normally it's the real clock.
+        session_types: Only load these kinds of session (e.g. {'FP2'}). None =
+            all. The weekend pipeline passes exactly the sessions its planner
+            found ready (pipeline/plan.py); 'Q' also (re)tries the starting grid.
+        settle_hours: How long after a session STARTED it counts as finished.
+            The backfill uses the safe default; the pipeline passes 0, since its
+            planner already waited for each session's end (by session type).
 
     Returns:
         {item_key: status}, e.g. {'2024-24-FP1': 'ok', ...}
@@ -627,7 +635,7 @@ def ingest_season(
     # Only sessions that started before this cutoff are considered finished.
     # isoformat + 'Z' gives text in the same format as start_time_utc, so the
     # two can be compared directly as strings.
-    cutoff = (now - timedelta(hours=SESSION_SETTLE_HOURS)).isoformat(timespec="seconds")
+    cutoff = (now - timedelta(hours=settle_hours)).isoformat(timespec="seconds")
     cutoff = cutoff.replace("+00:00", "Z")
     outcomes: dict[str, str] = {}
 
@@ -647,6 +655,8 @@ def ingest_season(
     # Step 2: load each finished session.
     for session in matched:
         if rounds is not None and session.round not in rounds:
+            continue
+        if session_types is not None and session.session_type not in session_types:
             continue
         if session.start_time_utc > cutoff:
             continue  # hasn't happened (or finished) yet

@@ -341,3 +341,17 @@ def test_missing_starting_grid_stores_nothing(conn):
     event_id = add_event(conn, 2024, 24, "2024-12-08")
     quali = add_session(conn, event_id, "Q")
     assert openf1.load_starting_grid(conn, FakeClient({}), quali, 77) == 0
+
+
+def test_ingest_season_can_load_only_chosen_sessions(conn):
+    # The weekend pipeline asks for exactly the sessions its planner found ready.
+    add_event(conn, 2024, 24, "2024-12-08")
+    responses = session_payload()
+    responses[("sessions", 2024)] = [
+        openf1_session(SESSION_KEY, 1, "Race", "2024-12-08T13:00:00+00:00"),
+        openf1_session(9999, 1, "Qualifying", "2024-12-07T14:00:00+00:00"),
+    ]
+    monday = datetime(2024, 12, 9, 12, 0, tzinfo=timezone.utc)
+    outcomes = openf1.ingest_season(conn, FakeClient(responses), 2024, now=monday,
+                                    session_types={"R"}, settle_hours=0)
+    assert outcomes == {"2024-sessions": "ok", "2024-24-R": "ok"}     # Q not touched

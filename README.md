@@ -2,7 +2,7 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. 2026 rounds 20–23 are being predicted live as a rehearsal (own scorecard, not the resume metric). Phase 5 (automation) is in progress: the planner that works out what's due at any moment (fetch a session, predict a stage, score a race) is done; fetching, the tick itself, a simulated-weekend test and the GitHub Actions schedule are next.
+**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. 2026 rounds 20–23 are being predicted live as a rehearsal (own scorecard, not the resume metric). Phase 5 (automation) is in progress: the planner (what's due at any moment) and the weekend fetcher (only the sessions that are ready, with retries, validation and a give-up rule) are done; the tick itself, a simulated-weekend test and the GitHub Actions schedule are next.
 
 ## How it works
 
@@ -146,7 +146,8 @@ src/f1predictor/
   simulate/                  Monte Carlo simulator and race probabilities
   predict/                   predict one race at one stage and write it to the prediction log
   explain/                   SHAP contributions
-  pipeline/                  the hands-off weekend pipeline: plan.py decides what's due now
+  pipeline/                  the hands-off weekend pipeline: plan.py decides what's due now,
+                             fetch.py fetches exactly that
   evaluate/                  metrics, walk-forward evaluation, and the scorer for logged runs
 scripts/                     command-line entry points (see Usage)
 app/                         Streamlit results dashboard
