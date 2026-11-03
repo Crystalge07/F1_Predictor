@@ -13,7 +13,10 @@ The scheduler runs this every hour (Phase 5, step 5). Each tick:
                 again while the cutoff hasn't passed.
                 This is the automated version of "dry run first": the
                 prediction is built and checked in memory, and only then written.
-    3. SCORE    plan again, then score every race whose result is in.
+    3. SCORE    plan again, then score every race whose result is in. Then
+                the guardrail (pipeline/drift.py): alert if, over the last 8
+                scored live races, the model is >15% worse than its
+                baseline on places off or podium Brier. Alert only.
     4. REPORT   record the tick in pipeline_ticks, and raise alerts for
                 problems that matter: data that failed validation (bad,
                 not just late: alerted at once), blocked predictions
@@ -41,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from f1predictor.evaluate.scorer import score_runs
+from f1predictor.pipeline.drift import drift_alerts
 from f1predictor.pipeline.fetch import run_fetches
 from f1predictor.pipeline.plan import Action, plan, to_utc_text
 from f1predictor.predict.stage import live_problems, make_prediction, write_run
@@ -168,6 +172,17 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
                                   f"score_failed: {action.season} R{action.round}: {error}; retried next tick"))
             continue
         report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s)")
+
+    # --- 3b. Guardrail: is the live model falling behind its baseline? -----
+    # Alert only (pipeline/drift.py). Runs every tick, but each alert names
+    # the newest scored race, so it's raised once per race, not every hour.
+    try:
+        report.alerts.extend(drift_alerts(conn))
+    except Exception as error:
+        # Same rule as scoring: a broken check must not take the tick down.
+        # Keyed by day, so a check that stays broken alerts once a day.
+        report.alerts.append((f"drift_check_failed:{report.now[:10]}",
+                              f"drift_check_failed: the guardrail check crashed: {error}"))
 
     # --- 4. Informational problems, then the alerts ------------------------------
     for action in plan(conn, now):

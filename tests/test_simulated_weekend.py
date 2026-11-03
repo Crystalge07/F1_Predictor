@@ -145,3 +145,72 @@ def test_broken_data_still_needs_no_manual_step():
     # was missed, and the grid falling back to qualifying order is by design.
     alerts = [m for report in reports for m in report.new_alerts]
     assert len(alerts) == 1 and "gave_up" in alerts[0] and "FP3" in alerts[0]
+
+
+# -----------------------------------------------------------------------------
+# Retraining (test-suite step 7)
+# -----------------------------------------------------------------------------
+#
+# There is no retraining job to test: every prediction fits its stage's
+# model from scratch on every race before it (predict/stage.py). So
+# "retraining works" means three things, checked on the same clean run:
+#   1. each new result really reaches the next prediction (the training set
+#      grows by exactly one race per race),
+#   2. every prediction is graded once its race is over (all metrics),
+#   3. every prediction records which code made it.
+
+def live_runs(conn):
+    return conn.execute(
+        "SELECT e.round, r.stage, r.run_id, r.n_training_races, r.model_version FROM prediction_runs r "
+        "JOIN events e USING (event_id) WHERE r.mode = 'live' ORDER BY e.round, r.run_id").fetchall()
+
+
+def test_training_grows_by_exactly_one_race_per_race(clean_run):
+    conn, _ = clean_run
+    n = {(r["round"], r["stage"]): r["n_training_races"] for r in live_runs(conn)}
+    # Before go-live the database holds 2026's two races, so round 1 trains
+    # on 2; round 1's result is fetched on race night, so round 2 trains on
+    # 3; round 2's result makes it 4 for round 3. All three stages of a
+    # weekend see the same races: the race being predicted is never in its
+    # own training set (cutoff = before its race), and nothing else is
+    # added between Friday and Sunday.
+    assert n == {(1, "pre_weekend"): 2, (1, "practice"): 2, (1, "post_quali"): 2,
+                 (2, "pre_weekend"): 3, (2, "practice"): 3, (2, "post_quali"): 3,
+                 (3, "pre_weekend"): 4}
+
+
+# What the scorer writes for every run (evaluate/scorer.py): six metrics
+# compared with the stage's baseline, and two driver-list counts.
+METRICS_WITH_BASELINE = {"position_mae", "spearman", "winner_hit", "podium_hits", "brier_win", "brier_podium"}
+LINEUP_COUNTS = {"lineup_missing", "lineup_extra"}
+
+
+def test_every_finished_race_is_scored_on_every_metric_at_every_stage(clean_run):
+    conn, _ = clean_run
+    for r in live_runs(conn):
+        rows = {s["metric"]: s for s in conn.execute(
+            "SELECT metric, model_value, baseline_value, baseline_name FROM scores WHERE run_id = ?",
+            (r["run_id"],))}
+        if r["round"] == 3:
+            # Round 3 hasn't been raced when the simulation ends: nothing to grade yet.
+            assert rows == {}
+            continue
+        assert set(rows) == METRICS_WITH_BASELINE | LINEUP_COUNTS, f"R{r['round']} {r['stage']}"
+        # Every comparable metric has its baseline next to it (or "% better
+        # than baseline" can't be computed), and it's the right baseline.
+        expected = {"pre_weekend": "championship_order", "practice": "practice_order",
+                    "post_quali": "grid_order"}[r["stage"]]
+        for metric in METRICS_WITH_BASELINE:
+            assert rows[metric]["baseline_value"] is not None
+            assert rows[metric]["baseline_name"] == expected
+        # The fake world is clean: every starter was predicted, nobody extra.
+        assert rows["lineup_missing"]["model_value"] == 0
+        assert rows["lineup_extra"]["model_value"] == 0
+
+
+def test_every_run_records_the_code_that_made_it(clean_run):
+    conn, _ = clean_run
+    # model_version = commit + settings fingerprint (patched to a clean
+    # commit for the test). Without it, a score can't be traced back to the
+    # model that earned it, e.g. to split a season at a model change.
+    assert {r["model_version"] for r in live_runs(conn)} == {"abc1234+settings.00000000"}
