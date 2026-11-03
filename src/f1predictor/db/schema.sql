@@ -380,6 +380,11 @@ CREATE TABLE IF NOT EXISTS prediction_runs (
     -- had ENDED by this time. For a live run it's roughly created_at_utc; for
     -- a backtest it's the moment being replayed (e.g. qualifying's end).
     as_of_utc      TIMESTAMP NOT NULL,
+    -- Where the driver list (and grid) came from (features/as_of.py):
+    -- 'previous_race', 'practice_entries', 'starting_grid' or 'qualifying'
+    -- (the fallback when no starting grid was published). Lets the scorer
+    -- see which runs worked from second-best information.
+    lineup_source  TEXT,
     -- When the row was actually written (wall-clock time, UTC).
     created_at_utc TIMESTAMP NOT NULL,
     -- Which code and settings produced it: the git commit, plus a short hash

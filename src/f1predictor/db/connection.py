@@ -44,9 +44,9 @@ def init_db(conn: sqlite3.Connection, schema_path: Path = config.SCHEMA_PATH) ->
     Safe to call on an existing database: every statement in the schema uses
     IF NOT EXISTS, so existing tables (and their data) are left alone.
 
-    Note: this only ADDS missing tables. If we later change a column in an
-    existing table, this won't update it. That needs a migration, which we'll
-    handle if and when it comes up.
+    Note: the schema only ADDS missing tables. Columns added to an existing
+    table later are handled by the small `added_columns` list below, which
+    runs ALTER TABLE for any that are missing.
     """
     # Read the whole .sql file as one string...
     schema_sql = schema_path.read_text(encoding="utf-8")
@@ -54,6 +54,19 @@ def init_db(conn: sqlite3.Connection, schema_path: Path = config.SCHEMA_PATH) ->
     # ...and run it. executescript() runs multiple ;-separated statements,
     # unlike execute(), which only accepts one.
     conn.executescript(schema_sql)
+
+    # Small migrations: columns added to an existing table after it was first
+    # created. CREATE TABLE IF NOT EXISTS skips tables that already exist, so
+    # a database made before the column was added needs an ALTER TABLE.
+    # Each entry is (table, column, column definition).
+    added_columns = [
+        ("prediction_runs", "lineup_source", "TEXT"),   # Phase 4 step 3
+    ]
+    for table, column, definition in added_columns:
+        # PRAGMA table_info lists a table's columns, one row each ("name" = column name).
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # executescript commits automatically, but committing explicitly makes the
     # intent obvious to anyone reading this.

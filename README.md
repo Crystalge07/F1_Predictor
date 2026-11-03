@@ -2,7 +2,7 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–3 done (data, models for every stage, win/podium probabilities, explanations). Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)). Phase 4 (replaying the 2026 season race by race with every prediction logged) is in progress: the prediction log tables and strict as-of prediction rows are done (each stage only sees what was known at that moment, including the official starting grid from OpenF1 instead of the race result); predicting into the log, the scorer and the replay script are next.
+**Status:** Phases 1–3 done (data, models for every stage, win/podium probabilities, explanations). Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)). Phase 4 (replaying the 2026 season race by race with every prediction logged) is in progress: the prediction log tables and strict as-of prediction rows are done (each stage only sees what was known at that moment, including the official starting grid from OpenF1 instead of the race result), and `predict/stage.py` predicts one race at one stage and writes it to the log (order, probabilities, every input and its SHAP contribution). The scorer and the replay script are next.
 
 ## How it works
 
@@ -116,6 +116,7 @@ src/f1predictor/
                              as_of.py: prediction rows from only what was known at each stage
   models/                    baselines, the position model, DNF probabilities
   simulate/                  Monte Carlo simulator and race probabilities
+  predict/                   predict one race at one stage and write it to the prediction log
   explain/                   SHAP contributions
   evaluate/                  metrics and walk-forward evaluation
 scripts/                     command-line entry points (see Usage)

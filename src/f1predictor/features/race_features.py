@@ -263,6 +263,12 @@ def build_race_features(conn: sqlite3.Connection,
 
     id_columns = ["session_id", "season", "round", "race_date", "circuit_id",
                   "driver_id", "constructor_id"]
+    # Every feature as a float column. A column with no known values at all
+    # (e.g. practice pace when no laps were loaded, or a tiny test database)
+    # can come out as pandas' generic "object" type, which XGBoost refuses.
+    # to_numeric turns None into NaN; real numbers are unchanged.
+    for column in POST_QUALI_FEATURES + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS:
+        df[column] = pd.to_numeric(df[column], errors="coerce").astype(float)
     return (df[id_columns + POST_QUALI_FEATURES + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS
                + ["finish_position", "actual_position"]]
             .sort_values(["race_date", "session_id", "grid"])
