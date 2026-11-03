@@ -1,0 +1,98 @@
+# The hands-off pipeline: run one tick every hour (scripts/tick.py).
+#
+# The database is a single SQLite file kept as an asset of the GitHub Release
+# named "database" (decision 2026-11-03, docs/PRD.md). Each run:
+#   1. downloads it,
+#   2. runs one tick (fetch what's ready, predict live, score, alert),
+#   3. checks the result is safe to upload (scripts/check_db_upload.py: the
+#      file is healthy and every live prediction is still there, unchanged),
+#   4. uploads it back, after saving the downloaded copy as a backup,
+#   5. fails the run if the tick raised a NEW alert, so GitHub emails about it.
+#
+# Off until the repository variable PIPELINE_ENABLED is set to "true"
+# (Settings -> Secrets and variables -> Actions -> Variables).
+
+name: Pipeline tick
+
+on:
+  schedule:
+    # Every hour at :07 (cron is UTC). Not :00, when GitHub's scheduler is
+    # busiest and most likely to start late. The planner's 2-hour last call
+    # (pipeline/plan.py) leaves room for late starts.
+    - cron: "7 * * * *"
+  workflow_dispatch:            # the "Run workflow" button, for a run by hand
+    inputs:
+      dry_run:
+        description: "Dry run: fetch data and check predictions, but log no predictions"
+        type: boolean
+        default: false
+
+# One run at a time, ever: two ticks downloading and uploading the same file
+# at once would lose one's work. A new run waits for the current one.
+concurrency:
+  group: pipeline-database
+  cancel-in-progress: false
+
+permissions:
+  contents: write               # needed to upload release assets
+
+jobs:
+  tick:
+    if: vars.PIPELINE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}   # lets the gh CLI use this repository's releases
+      RELEASE: database
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"      # the version the project is developed on
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: pip install -e .
+        # Everything written below lives under data/ (gitignored), so the
+        # checkout stays clean and model_version names the exact commit;
+        # a dirty tree would block every live prediction (predict/stage.py).
+
+      - name: Download the database
+        run: |
+          mkdir -p data/upload
+          gh release download "$RELEASE" --pattern f1.sqlite.gz --dir data
+          gunzip --keep data/f1.sqlite.gz              # keep the .gz: it's the backup
+          cp data/f1.sqlite data/f1.before.sqlite      # what the guard compares against
+
+      - name: Tick
+        id: tick
+        run: |
+          set +e                       # don't stop here on exit 1: upload first
+          python scripts/tick.py ${{ inputs.dry_run && '--dry-run' || '' }}
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Check the database is safe to upload
+        run: python scripts/check_db_upload.py data/f1.before.sqlite data/f1.sqlite
+
+      - name: Upload the database
+        run: |
+          # 1. The copy downloaded at the start, as the previous version.
+          cp data/f1.sqlite.gz data/upload/f1-previous.sqlite.gz
+          gh release upload "$RELEASE" data/upload/f1-previous.sqlite.gz --clobber
+          # 2. The new version.
+          gzip -c data/f1.sqlite > data/upload/f1.sqlite.gz
+          gh release upload "$RELEASE" data/upload/f1.sqlite.gz --clobber
+          # 3. Once a day (the midnight UTC run), a backup named after the
+          #    weekday, so there are always 7 days of history to go back to.
+          if [ "$(date -u +%H)" = "00" ]; then
+            cp data/upload/f1.sqlite.gz "data/upload/f1-$(date -u +%a).sqlite.gz"
+            gh release upload "$RELEASE" "data/upload/f1-$(date -u +%a).sqlite.gz" --clobber
+          fi
+
+      - name: Fail if the tick raised a new alert
+        if: steps.tick.outputs.code != '0'
+        run: |
+          echo "The tick raised a new alert (or crashed): see the Tick step above."
+          exit 1

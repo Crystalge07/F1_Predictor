@@ -2,7 +2,7 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. 2026 rounds 20–23 are being predicted live as a rehearsal (own scorecard, not the resume metric). Phase 5 (automation) is in progress: the tick (`scripts/tick.py`: plan, fetch what's ready, predict live after the same checks as a manual dry run, score, alert once per problem) is done, and it passes the Phase 5 gate: a simulated start of a season (two race weekends on a fake clock and fake APIs) runs with zero manual steps, including when a practice session and the starting grid never arrive. Next: the GitHub Actions schedule.
+**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. 2026 rounds 20–23 are being predicted live as a rehearsal (own scorecard, not the resume metric). Phase 5 (automation) is in progress: the tick (`scripts/tick.py`: plan, fetch what's ready, predict live after the same checks as a manual dry run, score, alert once per problem) is done, and it passes the Phase 5 gate: a simulated start of a season (two race weekends on a fake clock and fake APIs) runs with zero manual steps, including when a practice session and the starting grid never arrive. The GitHub Actions schedule (`.github/workflows/tick.yml`) is written and off until switched on; see Automation below.
 
 ## How it works
 
@@ -125,6 +125,28 @@ python scripts/explain_race.py 2026 19 --stage practice
 ```bash
 streamlit run app/dashboard.py
 ```
+
+## Automation
+
+`.github/workflows/tick.yml` runs `scripts/tick.py` every hour. The database lives as `f1.sqlite.gz` on the GitHub Release named `database`. Each run downloads it, ticks, checks it's safe to upload (`scripts/check_db_upload.py`: healthy file, every live prediction still there and unchanged) and uploads it back, keeping the previous version and a daily backup per weekday. A run fails, so GitHub emails, when the tick raises a new alert.
+
+One-time setup:
+
+```bash
+gzip -c data/f1.sqlite > data/f1.sqlite.gz
+gh release create database data/f1.sqlite.gz --prerelease --title "Pipeline database" \
+  --notes "SQLite database used by the scheduled pipeline. Not a software release."
+gh variable set PIPELINE_ENABLED --body true      # switch the schedule on
+gh workflow run tick.yml -f dry_run=true          # first run: a dry run
+```
+
+**Once it's on, the Release copy is the only real database.** Don't run `tick.py` or `predict_event.py --live` locally (that would write live runs into a copy nobody else sees). To look at the latest data locally:
+
+```bash
+gh release download database --pattern f1.sqlite.gz --dir data --clobber && gunzip -f data/f1.sqlite.gz
+```
+
+To pause: `gh variable set PIPELINE_ENABLED --body false`.
 
 ## Tuned settings
 
