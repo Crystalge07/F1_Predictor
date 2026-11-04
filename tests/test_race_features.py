@@ -176,3 +176,28 @@ def test_lineage_lookup():
     assert lineage("toro_rosso") == "rb"
     assert lineage("alfa") == "audi"
     assert lineage("ferrari") == "ferrari"      # unlisted -> its own lineage
+
+
+def test_a_race_stopped_early_with_reduced_points_is_left_out(conn):
+    # 2021 Belgium: one lap behind the safety car, half points, "result" =
+    # the grid. It mustn't be a training target or feed anyone's form.
+    r1, r2, r3 = standard_season(conn)
+    normal = build_race_features(conn)
+    # Race 2 becomes a half-points race, its "result" the grid order.
+    for driver, points in {"a": 9.0, "b": 12.5, "c": 7.5, "d": 6.0}.items():
+        conn.execute("UPDATE results SET points = ? WHERE session_id = ? AND driver_id = ?",
+                     (points, r2, driver))
+    shortened = build_race_features(conn)
+
+    assert r2 in set(normal["session_id"]) and r2 not in set(shortened["session_id"])
+    # Driver 'c' won race 2 in the normal season; without it, his form going
+    # into race 3 is race 1 alone (3rd).
+    assert row(shortened, r3, "c")["driver_form_finish"] == 3
+    assert row(normal, r3, "c")["driver_form_finish"] == 2     # (3 + 1) / 2
+
+
+def test_full_points_races_and_races_without_points_stay(conn):
+    r1, r2, r3 = standard_season(conn)            # no points loaded at all: kept
+    assert {r1, r2, r3} <= set(build_race_features(conn)["session_id"])
+    conn.execute("UPDATE results SET points = 25 WHERE session_id = ? AND driver_id = 'c'", (r2,))
+    assert r2 in set(build_race_features(conn)["session_id"])
