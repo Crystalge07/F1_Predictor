@@ -189,3 +189,22 @@ pre-weekend; at that stage the two orders almost always agree). Every 2027
 live run uses the new definition. The held-out "places off" numbers above
 were measured on the model's raw order and are not re-stated. The win and
 podium probabilities, and so every Brier number, are unchanged.
+
+### Library versions are part of the frozen model
+
+The model is retrained for every prediction, but the pipeline used to
+install the newest XGBoost / pandas / NumPy on every hourly run (only lower
+bounds in `pyproject.toml`). A library release could have changed the
+"frozen" model mid-season while `model_version` still claimed the same
+commit and settings. Now:
+
+* `requirements.lock` pins every package to the version the tests passed on
+  (`scripts/lock_requirements.py`); the workflow installs with
+  `pip install -e . -c requirements.lock`;
+* `model_version` ends with the model libraries' versions
+  (`+xgboost-3.2.0+pandas-2.3.3+...`, `f1predictor/environment.py`);
+* a live run is refused if those differ from the lock, like a run from
+  uncommitted code.
+
+Upgrading a library is a deliberate change, made between seasons with the
+same care as a settings change.

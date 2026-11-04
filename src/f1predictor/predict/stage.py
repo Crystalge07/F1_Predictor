@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from f1predictor import config, settings
+from f1predictor import config, environment, settings
 from f1predictor.explain.contributions import explain_race
 from f1predictor.features.as_of import prediction_rows
 from f1predictor.features.provisional import add_placeholder_drivers
@@ -99,7 +99,8 @@ def settings_text() -> str:
 
 
 def model_version() -> str:
-    """'<git commit>[-dirty]+settings.<hash>', e.g. 'a1b2c3d+settings.9f8e7d6c'.
+    """'<git commit>[-dirty]+settings.<hash>+<library versions>', e.g.
+    'a1b2c3d+settings.9f8e7d6c+xgboost-3.2.0+pandas-2.3.3+numpy-2.2.6+scikit-learn-1.7.2+scipy-1.15.3'.
 
     git commit  which code made the prediction. '-dirty' means there were
                 uncommitted changes, so the commit alone doesn't fully
@@ -108,6 +109,10 @@ def model_version() -> str:
     settings    the first 8 characters of a SHA-256 hash of the tuned
                 settings, so two runs with the same commit but different
                 settings files can be told apart.
+    libraries   the installed version of each library that can change what
+                the model predicts (environment.MODEL_LIBRARIES; added
+                2026-11-03). The model is retrained for every prediction,
+                so these are as much a part of it as the code.
     'nogit' replaces the commit if git isn't available (e.g. a bare copy).
     """
     settings_hash = hashlib.sha256(settings_text().encode("utf-8")).hexdigest()[:8]
@@ -122,7 +127,8 @@ def model_version() -> str:
             commit += "-dirty"
     except (OSError, subprocess.CalledProcessError):
         commit = "nogit"
-    return f"{commit}+settings.{settings_hash}"
+    libraries = "".join(f"+{name}-{version}" for name, version in environment.library_versions().items())
+    return f"{commit}+settings.{settings_hash}{libraries}"
 
 
 def model_order(drivers: pd.DataFrame) -> pd.Series:
@@ -326,8 +332,9 @@ def live_problems(conn: sqlite3.Connection, prediction: StagePrediction, now: da
 
     On top of check_prediction: the cutoff hasn't passed (a "live" prediction
     made after the session started wouldn't be honest), this race and stage
-    has no live run yet, and the code is a clean commit (so model_version
-    names exactly the code that ran).
+    has no live run yet, the code is a clean commit (so model_version
+    names exactly the code that ran), and the model libraries are the
+    versions in requirements.lock.
     """
     from f1predictor.pipeline.plan import parse_utc
 
@@ -338,6 +345,9 @@ def live_problems(conn: sqlite3.Connection, prediction: StagePrediction, now: da
                     (prediction.event_id, prediction.stage)).fetchone():
         problems.append("a live run for this race and stage already exists")
     version = model_version()
-    if version.startswith("nogit") or "-dirty" in version:
+    if version.startswith("nogit") or "-dirty" in version.split("+", 1)[0]:
         problems.append(f"code version {version}: uncommitted changes")
+    # The model libraries must be the locked, tested versions
+    # (environment.py): otherwise the "frozen" model isn't the tested one.
+    problems += [f"library not as locked in requirements.lock: {p}" for p in environment.lock_problems()]
     return problems

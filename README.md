@@ -80,10 +80,12 @@ Requires Python 3.10+.
 ```bash
 python3 -m venv .venv            # create an isolated environment for this project
 source .venv/bin/activate        # activate it (run this in every new terminal)
-pip install -e ".[dev]"          # install the project + dev tools in editable mode
+pip install -e ".[dev]" -c requirements.lock   # the project + dev tools, at the tested versions
 pip install -e ".[dashboard]"    # optional: the Streamlit results page
 brew install libomp              # macOS only: the OpenMP runtime XGBoost needs
 ```
+
+`requirements.lock` pins every library to the version the tests pass on; the hourly pipeline installs from it, and a live prediction is refused if the model libraries (XGBoost, pandas, NumPy, scikit-learn, SciPy) differ from it. To upgrade: install the new versions, run the tests, then `python scripts/lock_requirements.py` and commit the lock.
 
 ## Usage
 

@@ -59,10 +59,17 @@ jobs:
         with:
           python-version: "3.10"      # the version the project is developed on
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.lock
 
       - name: Install
-        run: pip install -e .
+        # -c requirements.lock: exactly the library versions the tests passed
+        # on (scripts/lock_requirements.py). Without it pip would take the
+        # newest release of everything, and a new XGBoost or pandas could
+        # quietly change the frozen model, which is retrained every run.
+        # A live run is refused if the model libraries don't match the lock.
+        run: pip install -e . -c requirements.lock
         # Everything written below lives under data/ (gitignored), so the
         # checkout stays clean and model_version names the exact commit;
         # a dirty tree would block every live prediction (predict/stage.py).
