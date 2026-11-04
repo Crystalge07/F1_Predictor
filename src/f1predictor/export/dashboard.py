@@ -37,9 +37,11 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from f1predictor.evaluate.scorer import HIGHER_IS_BETTER, scorecard_label, scorecards, summary
+from f1predictor.evaluate.scorer import (HIGHER_IS_BETTER, UnresolvedDriverError, logged_predictions,
+                                         real_driver_ids, run_info, scorecard_label, scorecards, summary)
 from f1predictor.explain.contributions import FEATURE_LABELS
 from f1predictor.features.provisional import is_provisional, resolve
+from f1predictor.models.baselines import actual_result
 from f1predictor.pipeline.plan import parse_utc, to_utc_text
 
 SCHEMA = 1                 # bumped if a file's shape changes, so the app can tell
@@ -221,10 +223,76 @@ def build_index(conn: sqlite3.Connection, races: dict[int, dict], now: datetime)
     }
 
 
+# Calibration groups: predicted chance from..to (the last includes 1.0).
+CALIBRATION_EDGES = [0.0, 0.05, 0.10, 0.20, 0.40, 0.70, 1.0]
+
+
+def per_race_scores(conn: sqlite3.Connection, season: int, mode: str) -> dict[str, list[dict]]:
+    """{stage: [one entry per scored race, in calendar order]}: each race's
+    scores, model vs baseline (the same `scores` rows summary() averages)."""
+    rows = conn.execute(
+        """
+        SELECT r.stage, e.season, e.round, e.name, s.metric, s.model_value, s.baseline_value
+        FROM scores s
+        JOIN prediction_runs r ON r.run_id = s.run_id
+        JOIN events e          ON e.event_id = r.event_id
+        WHERE e.season = ? AND r.mode = ?
+        ORDER BY e.round, s.metric
+        """, (season, mode)).fetchall()
+    races: dict[str, dict[int, dict]] = {}
+    for row in rows:
+        race = races.setdefault(row["stage"], {}).setdefault(
+            row["round"], {"season": row["season"], "round": row["round"], "name": row["name"], "metrics": {}})
+        race["metrics"][row["metric"]] = {"model": _num(row["model_value"], 4), "baseline": _num(row["baseline_value"], 4)}
+    return {stage: list(races[stage].values()) for stage in STAGE_ORDER if stage in races}
+
+
+def calibration(conn: sqlite3.Connection, season: int, mode: str, stage: str) -> dict[str, list[dict]]:
+    """How often things predicted at X% happened, for win and podium.
+
+    Over every scored run of this group and stage: each driver who STARTED
+    the race, with the run's predicted chance (0 if the run didn't have
+    them: the scorer's rule, evaluate/scorer.py, so this matches the Brier
+    scores), and whether it happened (won / finished top 3). Grouped by
+    predicted chance (CALIBRATION_EDGES); empty groups are left out.
+    """
+    runs = conn.execute(
+        "SELECT r.run_id FROM prediction_runs r JOIN events e ON e.event_id = r.event_id "
+        "WHERE e.season = ? AND r.mode = ? AND r.stage = ? "
+        "AND EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id) ORDER BY r.run_id",
+        (season, mode, stage)).fetchall()
+    pairs = {"win": [], "podium": []}          # (predicted chance, happened 0/1)
+    for (run_id,) in runs:
+        info = run_info(conn, run_id)
+        actual = actual_result(conn, info["race_session_id"])
+        try:
+            logged = real_driver_ids(conn, run_id, info["event_id"], logged_predictions(conn, run_id))
+        except UnresolvedDriverError:
+            continue                            # (not scored either; the tick alerts)
+        chances = {row.driver_id: (row.p_win, row.p_podium) for row in logged.itertuples()}
+        for driver, position in actual.items():
+            p_win, p_podium = chances.get(driver, (0.0, 0.0))
+            pairs["win"].append((p_win, int(position == 1)))
+            pairs["podium"].append((p_podium, int(position <= 3)))
+
+    groups = {}
+    for outcome, values in pairs.items():
+        bins = []
+        for low, high in zip(CALIBRATION_EDGES, CALIBRATION_EDGES[1:]):
+            inside = [(p, hit) for p, hit in values if low <= p < high or (high == 1.0 and p == 1.0)]
+            if inside:
+                bins.append({"from": low, "to": high, "n": len(inside),
+                             "predicted": _num(sum(p for p, _ in inside) / len(inside), 4),
+                             "observed": _num(sum(hit for _, hit in inside) / len(inside), 4)})
+        groups[outcome] = bins
+    return groups
+
+
 def build_scorecard(conn: sqlite3.Connection) -> dict:
-    """Per (season, mode): each stage's average of each metric vs its baseline.
-    The groups are NEVER added together (docs/evaluation-protocol.md): each
-    carries the label that must be shown with it."""
+    """Per (season, mode): each stage's average of each metric vs its baseline,
+    each race's scores, and calibration. The groups are NEVER added together
+    (docs/evaluation-protocol.md): each carries the label that must be shown
+    with it."""
     groups = []
     for season, mode in scorecards(conn):
         table = summary(conn, season, mode)
@@ -235,8 +303,11 @@ def build_scorecard(conn: sqlite3.Connection) -> dict:
                 "baseline_name": row.baseline_name, "improvement": _num(row.improvement, 4),
                 "higher_is_better": HIGHER_IS_BETTER.get(row.metric),
             }
+        stage_names = [s for s in STAGE_ORDER if s in stages]
         groups.append({"season": season, "mode": mode, "label": scorecard_label(season, mode),
-                       "stages": {s: stages[s] for s in STAGE_ORDER if s in stages}})
+                       "stages": {s: stages[s] for s in stage_names},
+                       "per_race": per_race_scores(conn, season, mode),
+                       "calibration": {s: calibration(conn, season, mode, s) for s in stage_names}})
     return {"schema": SCHEMA, "groups": groups}
 
 
