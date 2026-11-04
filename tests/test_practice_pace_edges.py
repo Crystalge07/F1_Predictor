@@ -15,19 +15,24 @@ Documented weakness (passing, describes what happens today):
       reference, so they score 0% (the "fastest") for it. Real data: 5 of 225
       sessions, 18 with three or fewer long-runners.
 
-KNOWN BUGS (xfail, strict), all found in the real data. Nothing in the
-feature code rejects implausible laps (validation only warns below a fixed
-55 s, and never removes anything):
-    3. one glitched FAST lap becomes the weekend's reference and shifts every
-       other driver's short-run gap. 2026 R4 Miami FP1: Piastri 60.4 s when the
-       next best was 89.3 s -> 21 drivers at ~51-54%.
-    4. a driver whose only timed lap isn't a flying lap gets an absurd gap.
+FIXED (were BUGS 3-5), all found in the real data. features/practice_pace.py
+now drops implausible laps before computing either feature:
+    3. one glitched FAST lap used to become the weekend's reference and shift
+       every other driver's short-run gap. 2026 R4 Miami FP1: Piastri 60.4 s
+       when the next best was 89.3 s -> 21 drivers at ~51-54%. Now: a lap
+       more than 7% faster than every other driver's best AND than the
+       driver's own next-best lap is dropped (exactly 1 of 100,074 real laps:
+       this one).
+    4. a driver whose only timed lap wasn't a flying lap got an absurd gap.
        2023 R12 FP1 (sprint weekend, so FP1 is the only practice):
-       Verstappen's one lap took 1,631 s (red flag) -> 1,224%.
-    5. a stint of mostly cool-down laps counts as a "long run". The 105% filter
-       is relative to the stint's own MEDIAN, and when most laps are slow the
-       median is slow, so it keeps the cool-down laps and drops the push laps.
-       2026 R17 (Singapore) FP1: Perez's stint (median 147 s, fastest 95 s) -> 52.7%.
+       Verstappen's one lap took 1,631 s (red flag) -> 1,224%. Now: a best
+       lap outside 107% of the weekend's typical best gives NaN (unknown).
+    5. a stint of mostly cool-down laps counted as a "long run": the filter
+       was 105% of the stint's MEDIAN, and when most laps are slow the median
+       is slow. 2026 R17 (Singapore) FP1: Perez's stint (median 147 s,
+       fastest 95 s) -> 52.7%. Now: 107% of the stint's FASTEST lap.
+Real data after the fix (2023-2026): worst short-run gap 10.7% (was 1,224%),
+worst long-run gap 14.8% (was 52.7%).
 """
 
 import pandas as pd
@@ -113,12 +118,11 @@ def test_lone_long_runner_is_scored_as_the_fastest_in_that_session():
 
 
 # -----------------------------------------------------------------------------
-# Known bugs
+# Were bugs (fixed)
 # -----------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="BUG 3: one glitched fast lap shifts every driver's short-run gap")
 def test_one_glitched_lap_does_not_shift_everyone():
-    # Real-world shape of 2026 Miami FP1: normal laps around 89-91 s, and one
+    # Was BUG 3. Real-world shape of 2026 Miami FP1: normal laps around 89-91 s, and one
     # timing glitch of 60 s for z. x and y are 1% apart and should stay so.
     table = laps(
         stint("x", 1, [89.3, 89.5, 89.6], "FP1"),
@@ -126,16 +130,15 @@ def test_one_glitched_lap_does_not_shift_everyone():
         stint("z", 1, [60.4, 89.8, 90.0], "FP1"),
     )
     gaps = short_gap(table)
-    # Measured against x's 89.3 s, y is 1.0% off. Today both are measured
-    # against the 60.4 s glitch: x ~48%, y ~49%, and the 1% between them is
-    # stretched to 1.5%.
+    # Measured against x's 89.3 s, y is 1.0% off. Before the fix both were
+    # measured against the 60.4 s glitch: x ~48%, y ~49%, and the 1% between
+    # them was stretched to 1.5%.
     assert gaps["y"] - gaps["x"] == pytest.approx(1.0, abs=0.05)
     assert gaps["x"] < 1.0
 
 
-@pytest.mark.xfail(strict=True, reason="BUG 4: a non-flying single lap gives an absurd short-run gap")
 def test_a_lap_that_is_not_a_flying_lap_gives_no_gap():
-    # Like Verstappen in 2023 Belgium FP1: one "lap" lasting 27 minutes
+    # Was BUG 4. Like Verstappen in 2023 Belgium FP1: one "lap" lasting 27 minutes
     # (it spans a red flag). There's no pace information in it, so the gap
     # should be unknown (NaN), or at least something a real car could do.
     # v's lap is built by hand, NOT with stint(): stint() adds 120 s out/in
@@ -144,18 +147,31 @@ def test_a_lap_that_is_not_a_flying_lap_gives_no_gap():
     lone_lap = [{**stint("v", 1, [], "FP1")[0], "lap_time_ms": 1_631_100}]
     table = laps(stint("x", 1, [123.2, 123.5], "FP1"), lone_lap)
     gap = short_gap(table)["v"]
-    assert pd.isna(gap) or gap < 10.0      # today: 1,224%
+    assert pd.isna(gap)                    # before the fix: 1,224%
 
 
-@pytest.mark.xfail(strict=True, reason="BUG 5: a stint of mostly cool-down laps counts as a long run")
 def test_mostly_cool_down_stint_is_not_a_long_run():
-    # x does a proper long run at 92 s. p alternates two push laps (95 s) with
+    # Was BUG 5. x does a proper long run at 92 s. p alternates two push laps (95 s) with
     # cool-down laps (~147 s), like Perez's 2026 Singapore FP1 stint. Six
-    # cool-down laps survive the 105%-of-median filter, which makes a
-    # "long run" at ~60% off the pace.
+    # cool-down laps survived the old 105%-of-median filter, which made a
+    # "long run" at ~60% off the pace. Now only the 2 push laps pass, too
+    # few for a long run: p has no long-run gap at all.
     table = laps(
         stint("x", 1, [92.0] * 6, "FP1"),
         stint("p", 1, [95.0, 147.0, 146.0, 148.0, 95.5, 147.5, 146.5, 147.0], "FP1"),
     )
-    gap = long_gap(table).get("p")
-    assert gap is None or pd.isna(gap) or gap < 10.0
+    assert "p" not in long_gap(table)
+
+
+def test_real_dry_laps_in_a_rain_hit_session_are_not_glitches():
+    # 2024 Japan FP2: rain arrived after a few cars set dry laps. h's dry
+    # 95.2 s is far faster than h's later wet laps and than the session's
+    # typical (wet) best, but NOT faster than another car's dry lap (94.7 s),
+    # so it's real and must be kept.
+    table = laps(
+        stint("p", 2, [94.7, 96.9, 99.1]),
+        stint("h", 2, [95.2, 104.0, 105.0]),
+        stint("w1", 2, [104.5, 105.5]), stint("w2", 2, [105.0, 106.0]),
+        stint("w3", 2, [106.0, 107.0]),
+    )
+    assert short_gap(table)["h"] == pytest.approx((95.2 / 94.7 - 1) * 100)

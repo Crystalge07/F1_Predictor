@@ -21,13 +21,30 @@ it comes before. (Sprint races are only used for long runs: a sprint race IS a
 long run.) Sprint qualifying (SQ) is skipped: it's single-lap stuff that
 qualifying already covers better.
 
+Timing glitches (both features): a lap more than 7% FASTER than both the
+best lap of every other driver in the session and the driver's own next-best
+lap is not a real lap, and is dropped before anything else. (Real case: 2026 Miami FP1, a 60.4 s lap when
+the next best was 89.3 s, which used to put 21 drivers ~52% off the pace.)
+
 What makes a long-run lap "clean":
     * not the first lap of a stint (out-lap, or the standing start of a sprint)
     * not the last lap of a stint (the in-lap, slowed by entering the pits)
-    * within 105% of that stint's median lap: drops laps stuck in traffic,
-      cool-down laps, and safety-car laps
+    * within 107% of that stint's FASTEST lap: drops laps stuck in traffic,
+      cool-down laps, and safety-car laps. (It used to be 105% of the stint's
+      median, but when most laps of a stint are cool-down laps the median IS
+      a cool-down lap, and the filter kept them: 2026 Singapore FP1, Perez,
+      a "long run" 52.7% off the pace. 107% rather than 105%: measured from
+      the fastest lap, 105% also threw away real long runs whose tyres faded,
+      9 more of them than 107% did, without catching any more junk. Chosen
+      on data quality only, not on prediction scores.)
     * the stint has at least MIN_LONG_RUN_LAPS clean laps left (otherwise it's a
       short qualifying-style run, not a long run)
+
+Short runs: a driver whose best lap of the weekend is outside 107% of the
+weekend's typical best lap (F1's own 107% rule) never did a representative
+flying lap, so their short-run gap is unknown (NaN) rather than huge. (Real
+case: 2023 Belgium FP1, Verstappen's only timed lap spanned a red flag:
+1,631 s, a 1,224% gap.) Their long runs, if any, still count.
 
 Simplification (written down, not hidden): no fuel correction. Teams run
 different, secret fuel loads, so a car running heavy looks a bit slow. The
@@ -39,7 +56,9 @@ import sqlite3
 import pandas as pd
 
 MIN_LONG_RUN_LAPS = 5
-CLEAN_LAP_LIMIT = 1.05  # laps slower than 105% of the stint median are dropped
+CLEAN_LAP_LIMIT = 1.07  # laps slower than 107% of the stint's fastest lap are dropped
+GLITCH_LIMIT = 0.93     # laps this much faster than every other driver's best AND their own next-best are glitches
+REPRESENTATIVE_LIMIT = 1.07   # the 107% rule for a driver's best practice lap
 
 PRACTICE_PACE_COLUMNS = ["long_run_gap_pct", "short_run_gap_pct"]
 
@@ -99,8 +118,57 @@ def load_pre_quali_laps(conn: sqlite3.Connection) -> pd.DataFrame:
     return laps[laps["driver_id"].notna()].drop(columns=["event_id", "car_number"])
 
 
+def _typical_best(laps: pd.DataFrame, keys: list[str]) -> pd.Series:
+    """For every lap row: the median, over drivers, of each driver's best lap
+    within `keys` (e.g. one session). A robust "how fast is a good lap here",
+    which one odd lap or one odd driver can't move much."""
+    best = laps.groupby(keys + ["driver_id"], as_index=False)["lap_time_ms"].min()
+    typical = best.groupby(keys)["lap_time_ms"].median().rename("typical_best_ms")
+    return laps[keys].merge(typical, left_on=keys, right_index=True, how="left")["typical_best_ms"].values
+
+
+def _drop_glitches(laps: pd.DataFrame) -> pd.DataFrame:
+    """Remove timing glitches: laps that are BOTH
+        * faster than GLITCH_LIMIT x the best lap any OTHER driver set in the
+          session, and
+        * faster than GLITCH_LIMIT x the same driver's own next-best lap.
+
+    A real lap is never 7% faster than the whole rest of the field AND than
+    everything else its own driver did. The 2026 Miami glitch (60.4 s, when
+    the next best car was 89.3 s and that driver's other laps ~90 s) fails both.
+    Each test alone would also catch real laps:
+        * compared with a "typical" lap instead of the best other lap, real
+          dry laps in a rain-hit session look too fast (2024 Japan FP2:
+          Hamilton's 95.2 s, slower than Piastri's 94.7 s)
+        * a driver's one push lap among slow laps is far faster than their
+          own next-best
+    A driver with a single timed lap, or alone in a session, can't be tested,
+    so nothing is dropped there.
+    """
+    keys = ["session_id", "driver_id"]
+    # Each driver's best lap in each session, and the fastest best of the
+    # OTHER drivers: the session's fastest best, or the second-fastest for
+    # the driver who set the fastest.
+    best = laps.groupby(keys, as_index=False)["lap_time_ms"].min().rename(columns={"lap_time_ms": "own_best"})
+    best = best.sort_values(["session_id", "own_best"])
+    rank = best.groupby("session_id").cumcount()                  # 0 = fastest driver
+    fastest = best.groupby("session_id")["own_best"].transform("first")
+    second = best.groupby("session_id")["own_best"].transform(lambda b: b.iloc[1] if len(b) > 1 else float("nan"))
+    best["others_best"] = second.where(rank == 0, fastest)
+
+    # Each driver's second-fastest lap in the session. nsmallest(2).max() =
+    # the 2nd smallest; with only one lap it's that lap itself, which never
+    # counts as "much faster than itself".
+    laps = laps.merge(best[keys + ["others_best"]], on=keys, how="left")
+    own_next_best = laps.groupby(keys)["lap_time_ms"].transform(lambda t: t.nsmallest(2).max())
+    glitch = ((laps["lap_time_ms"] < GLITCH_LIMIT * laps["others_best"])
+              & (laps["lap_time_ms"] < GLITCH_LIMIT * own_next_best))
+    return laps[~glitch].drop(columns="others_best")
+
+
 def _long_run_pace(laps: pd.DataFrame) -> pd.DataFrame:
     """long_run_gap_pct per (race_session_id, driver_id)."""
+    laps = _drop_glitches(laps)
     # Step 1: drop out-laps and in-laps (first and last lap of each stint).
     in_a_stint = laps["stint_number"].notna()
     not_out_lap = (laps["is_pit_out_lap"] != 1) & (laps["lap_number"] != laps["stint_first_lap"])
@@ -110,10 +178,12 @@ def _long_run_pace(laps: pd.DataFrame) -> pd.DataFrame:
     stint_keys = ["session_id", "driver_id", "stint_number"]
 
     # Step 2: drop slow laps (traffic, cool-down, safety car): anything over
-    # 105% of the stint's median. transform("median") puts the stint median
-    # on every lap row so we can compare row by row.
-    stint_median = candidates.groupby(stint_keys)["lap_time_ms"].transform("median")
-    clean = candidates[candidates["lap_time_ms"] <= stint_median * CLEAN_LAP_LIMIT].copy()
+    # 107% of the stint's FASTEST lap (not its median: see the module
+    # docstring). transform("min") puts the stint's fastest lap on every lap
+    # row so we can compare row by row. Glitches are already gone, so the
+    # fastest lap is a real one.
+    stint_best = candidates.groupby(stint_keys)["lap_time_ms"].transform("min")
+    clean = candidates[candidates["lap_time_ms"] <= stint_best * CLEAN_LAP_LIMIT].copy()
 
     # Step 3: keep only real long runs (enough clean laps left in the stint).
     clean_laps_in_stint = clean.groupby(stint_keys)["lap_time_ms"].transform("count")
@@ -137,10 +207,16 @@ def _long_run_pace(laps: pd.DataFrame) -> pd.DataFrame:
 
 def _short_run_pace(laps: pd.DataFrame) -> pd.DataFrame:
     """short_run_gap_pct per (race_session_id, driver_id), from practice sessions only."""
+    laps = _drop_glitches(laps)
     practice = laps[laps["session_type"].isin(["FP1", "FP2", "FP3"])]
     # Each driver's single best practice lap of the weekend...
     best = practice.groupby(["race_session_id", "driver_id"], as_index=False)["lap_time_ms"].min()
+    # ...kept only if it's a representative flying lap: within 107% of the
+    # weekend's typical best (median over drivers). Otherwise: unknown (NaN).
+    typical = best.groupby("race_session_id")["lap_time_ms"].transform("median")
+    best["lap_time_ms"] = best["lap_time_ms"].where(best["lap_time_ms"] <= REPRESENTATIVE_LIMIT * typical)
     # ...compared with the fastest practice lap anyone set that weekend.
+    # (min() skips the NaNs, so an unknown driver can't be the reference.)
     fastest = best.groupby("race_session_id")["lap_time_ms"].transform("min")
     best["short_run_gap_pct"] = (best["lap_time_ms"] / fastest - 1) * 100
     return best[["race_session_id", "driver_id", "short_run_gap_pct"]]
