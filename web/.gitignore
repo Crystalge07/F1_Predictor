@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# Local data for `npm run dev` (scripts/export_dashboard.py ... web/public)
+public/data/

@@ -126,7 +126,15 @@ def test_the_dashboard_is_exported_after_the_database_is_safe(workflow):
     # stop every later step).
     names = [s.get("name") for s in workflow["jobs"]["tick"]["steps"]]
     assert names.index("Upload the database") < names.index("Export the dashboard data") \
+        < names.index("Set up Node") < names.index("Build the dashboard app") \
         < names.index("Package the site for GitHub Pages") < names.index("Fail if the tick raised a new alert")
+    # The app is built (from the locked versions) and packaged only when
+    # there's something new to deploy; most hours, nothing is built.
+    steps = {s.get("name"): s for s in workflow["jobs"]["tick"]["steps"]}
+    for name in ("Set up Node", "Build the dashboard app", "Package the site for GitHub Pages"):
+        assert steps[name]["if"] == "steps.export.outputs.changed == 'true'"
+    assert "npm ci" in steps["Build the dashboard app"]["run"]
+    assert "cp -r dist/. ../site/" in steps["Build the dashboard app"]["run"]
     export = next(s for s in workflow["jobs"]["tick"]["steps"] if s.get("name") == "Export the dashboard data")
     assert "python scripts/export_dashboard.py data/f1.sqlite site" in export["run"]
     # Deploy only when something changed: the data's hash or the code's commit.

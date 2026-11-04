@@ -12,6 +12,9 @@ dist/
 # The SQLite database and the FastF1 cache are large and can always be rebuilt
 # by running the backfill script, so they never go into git.
 data/
+# ...except the dashboard's test data: a small export of the simulated test
+# world, committed so the React tests run anywhere (scripts/export_test_data.py).
+!web/src/test/data/
 
 # --- Tooling caches ---
 .pytest_cache/

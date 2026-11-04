@@ -105,12 +105,11 @@ jobs:
       - name: Export the dashboard data
         id: export
         # After the upload, so the database is safe whatever happens here.
-        # The site = the page (web/placeholder until the React app exists)
-        # + the data. Deployed only if something changed since the live
-        # site: its data hash or the code's commit. Most hours, neither has.
+        # The site = the React app (built below) + this data. Deployed only
+        # if something changed since the live site: the data's hash or the
+        # code's commit. Most hours, neither has, and nothing is built.
         run: |
           mkdir -p site
-          cp -r web/placeholder/. site/
           python scripts/export_dashboard.py data/f1.sqlite site
           new="$(python -c "import json; print(json.load(open('site/data/version.json'))['hash'])")@${GITHUB_SHA}"
           echo "{\"deployed\": \"$new\"}" > site/deployed.json
@@ -119,6 +118,24 @@ jobs:
           echo "live site: $live"
           echo "this run:  $new"
           if [ "$new" != "$live" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; else echo "changed=false" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Set up Node
+        if: steps.export.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the dashboard app
+        if: steps.export.outputs.changed == 'true'
+        # The exact versions in web/package-lock.json (npm ci), type-checked
+        # and built into web/dist, then put next to the exported data/.
+        run: |
+          cd web
+          npm ci
+          npm run build
+          cp -r dist/. ../site/
 
       - name: Package the site for GitHub Pages
         if: steps.export.outputs.changed == 'true'

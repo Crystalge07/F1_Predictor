@@ -233,3 +233,47 @@ def test_the_script_refuses_a_missing_database(tmp_path):
                           str(tmp_path / "missing.sqlite"), str(tmp_path / "site")], capture_output=True, text=True)
     assert run.returncode != 0 and "no database at" in run.stderr
     assert not (tmp_path / "missing.sqlite").exists()
+
+
+# -----------------------------------------------------------------------------
+# The React app's test data is this export
+# -----------------------------------------------------------------------------
+
+def same_data(a, b, path="") -> list[str]:
+    """Differences between two JSON values: same keys, lists and texts;
+    numbers within 0.001 (the model's floating point may differ slightly
+    between machines; the shape and the ids may not)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        if set(a) != set(b):
+            return [f"{path}: keys {sorted(set(a) ^ set(b))}"]
+        return [d for k in a for d in same_data(a[k], b[k], f"{path}.{k}")]
+    if path.endswith(".logged_at_utc"):
+        # The real clock time the simulated run was written (write_run
+        # stamps the actual time, on purpose): different every simulation.
+        # Only its form must match.
+        return [] if all(isinstance(x, str) and x.endswith("Z") and len(x) == 20 for x in (a, b)) \
+            else [f"{path}: {a!r} vs {b!r}"]
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return [f"{path}: {len(a)} vs {len(b)} items"]
+        return [d for i, (x, y) in enumerate(zip(a, b)) for d in same_data(x, y, f"{path}[{i}]")]
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
+        return [] if abs(a - b) <= 1e-3 else [f"{path}: {a} vs {b}"]
+    return [] if a == b else [f"{path}: {a!r} vs {b!r}"]
+
+
+def test_the_react_apps_test_data_is_what_the_export_writes(world, tmp_path):
+    # web/src/test/data/ (scripts/export_test_data.py) is what the React
+    # tests load. If the export changes and the files aren't regenerated,
+    # the app would be tested against an old format: this fails instead.
+    # Fix: run `python scripts/export_test_data.py` and commit the files.
+    export(world, tmp_path, now=END)
+    committed = ROOT / "web" / "src" / "test" / "data"
+    fresh = tmp_path / "data"
+    assert set(files(committed)) == set(files(fresh))
+    for name in files(fresh):
+        a, b = json.loads((committed / name).read_text()), json.loads((fresh / name).read_text())
+        if name == "version.json":     # the hash covers exact bytes; the numbers may differ a hair
+            a, b = {**a, "hash": None}, {**b, "hash": None}
+        differences = same_data(a, b)
+        assert differences == [], f"{name} is out of date (run scripts/export_test_data.py): {differences[:5]}"
