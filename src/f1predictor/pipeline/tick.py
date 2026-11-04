@@ -13,7 +13,10 @@ The scheduler runs this every hour (Phase 5, step 5). Each tick:
                 again while the cutoff hasn't passed.
                 This is the automated version of "dry run first": the
                 prediction is built and checked in memory, and only then written.
-    3. SCORE    plan again, then score every race whose result is in. Then
+    3. SCORE    plan again, then score every race whose result is in, and
+                re-score any whose official result changed since (a late
+                penalty: plan.RESULT_RECHECKS re-fetches results 24h and
+                72h after each race; a change raises 'result_revised'). Then
                 the guardrail (pipeline/drift.py): alert if, over the last 8
                 scored live races, the model is >15% worse than its
                 baseline on places off or podium Brier. Alert only.
@@ -37,13 +40,15 @@ dry_run=True: fetches data (safe: upserts, validated, idempotent) and builds
 and checks predictions, but writes nothing to the prediction log or scores.
 """
 
+import hashlib
 import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from f1predictor.evaluate.scorer import score_runs
+from f1predictor.evaluate.scorer import (record_scored_snapshot, result_changes, result_snapshot,
+                                         score_runs, scored_snapshot)
 from f1predictor.pipeline.drift import drift_alerts
 from f1predictor.pipeline.fetch import run_fetches
 from f1predictor.pipeline.plan import Action, as_utc, parse_utc, plan, to_utc_text
@@ -174,12 +179,20 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
                                 f"(favourite {favourite.driver_id} {favourite.p_win:.0%})")
 
     # --- 3. Score ------------------------------------------------------------
+    # 'score': runs not scored yet. 'rescore': every run of a race whose
+    # official result changed after it was scored (plan.RESULT_RECHECKS);
+    # scores are upserts, so re-scoring replaces them. Either way the result
+    # the runs were scored against is remembered (scored_results), which is
+    # how the planner notices the next change.
     for action in plan(conn, now):
-        if action.kind != "score" or dry_run:
+        if action.kind not in ("score", "rescore") or dry_run:
             continue
+        only_unscored = ("AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)"
+                         if action.kind == "score" else "")
         run_ids = [r[0] for r in conn.execute(
-            "SELECT run_id FROM prediction_runs r WHERE event_id = ? "
-            "AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)", (action.event_id,))]
+            f"SELECT run_id FROM prediction_runs r WHERE event_id = ? {only_unscored}", (action.event_id,))]
+        scored_against = scored_snapshot(conn, action.event_id)
+        snapshot = result_snapshot(conn, action.event_id)
         unresolved: dict[int, list[str]] = {}
         try:
             scored = score_runs(conn, run_ids, unresolved)
@@ -193,7 +206,19 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
             report.alerts.append((f"score_failed:{action.season}:{action.round}",
                                   f"score_failed: {action.season} R{action.round}: {error}; retried next tick"))
             continue
-        report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s)")
+        record_scored_snapshot(conn, action.event_id, snapshot)
+        rescored = " re-scored" if action.kind == "rescore" else ""
+        report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s){rescored}")
+        # A result that changed after scoring is worth a person's look (the
+        # scorecard just moved). Not alerted when there was simply no record
+        # yet (races scored before scored_results existed). Keyed by the new
+        # result, so each distinct revision alerts once.
+        if action.kind == "rescore" and scored_against is not None:
+            changes = result_changes(scored_against, snapshot)
+            digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()[:8]
+            report.alerts.append((f"result_revised:{action.season}:{action.round}:{digest}",
+                                  f"result_revised: {action.season} R{action.round}: the official result changed "
+                                  f"after scoring ({'; '.join(changes)}); {len(scored)} run(s) re-scored"))
         # A debutant predicted under a temporary id who can't be identified
         # (features/provisional.py): that run was left unscored, not scored
         # wrongly or dropped. Alerted once per car; every tick tries again

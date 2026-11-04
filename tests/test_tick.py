@@ -97,3 +97,33 @@ def test_a_failed_fetch_is_reported_but_not_alerted(conn, weekend, monkeypatch):
     report = run(conn)
     assert report.fetched == {"2024-02-FP1": "failed"}
     assert not any("FP1" in m for m in report.new_alerts)
+
+
+def test_a_result_revised_after_scoring_is_rescored_and_alerted_once(conn, weekend):
+    # Architecture review, 2026-11-03: a late penalty changes the official
+    # result after the race was scored. The tick re-scores every run of that
+    # race against the new result and alerts once.
+    first = run(conn)
+    assert first.scored and not any("re-scored" in line for line in first.scored)
+    before = {r["metric"]: r["model_value"] for r in conn.execute("SELECT metric, model_value FROM scores")}
+
+    # The two leading finishers swap places (a time penalty for the winner).
+    race = conn.execute("SELECT session_id FROM sessions WHERE event_id = ? AND session_type = 'R'",
+                        (weekend["event"],)).fetchone()[0]
+    top = conn.execute("SELECT driver_id FROM results WHERE session_id = ? AND position IN (1, 2) "
+                       "ORDER BY position", (race,)).fetchall()
+    conn.execute("UPDATE results SET position = 99 WHERE session_id = ? AND driver_id = ?", (race, top[0][0]))
+    conn.execute("UPDATE results SET position = 1, position_text = '1' WHERE session_id = ? AND driver_id = ?",
+                 (race, top[1][0]))
+    conn.execute("UPDATE results SET position = 2, position_text = '2' WHERE session_id = ? AND driver_id = ?",
+                 (race, top[0][0]))
+
+    second = run(conn)
+    assert any("re-scored" in line for line in second.scored)
+    [alert] = [m for m in second.new_alerts if m.startswith("result_revised")]
+    assert f"{top[0][0]}: 1 -> 2" in alert and f"{top[1][0]}: 2 -> 1" in alert
+    after = {r["metric"]: r["model_value"] for r in conn.execute("SELECT metric, model_value FROM scores")}
+    assert after != before                        # the scores follow the new result
+
+    third = run(conn)                             # nothing changed since: nothing to do
+    assert third.scored == [] and third.new_alerts == []

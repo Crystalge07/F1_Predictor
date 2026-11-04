@@ -33,13 +33,14 @@ tick can report what happened.
 
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from f1predictor import config
+from f1predictor.db import ingestion_log
 from f1predictor.ingest import jolpica, openf1
 from f1predictor.ingest.backfill import rematch_unmatched_entries
 from f1predictor.ingest.http import JsonHttpClient
-from f1predictor.pipeline.plan import Action
+from f1predictor.pipeline.plan import Action, recheck_key
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,16 @@ def run_fetches(conn: sqlite3.Connection, actions: list[Action], now: datetime,
     for season in seasons:
         logger.info("Jolpica %d: refreshing schedule, results, sprint, qualifying", season)
         outcomes.update(jolpica.ingest_season(conn, jolpica_client, season))
+    # A result re-check (plan.RESULT_RECHECKS) is done once the season's
+    # results were re-fetched successfully: mark it, so it isn't planned
+    # again. If the fetch failed, no mark, and the next tick tries again.
+    # (Whether the result actually CHANGED is the planner's 'rescore' check.)
+    for action in actions:
+        if action.kind == "fetch_jolpica" and action.target.startswith("recheck_") \
+                and outcomes.get(f"{action.season}-results") == "ok":
+            hours = int(action.target.removeprefix("recheck_").removesuffix("h"))
+            ingestion_log.record(conn, "jolpica", recheck_key(action.season, action.round, timedelta(hours=hours)), "ok")
+            outcomes[recheck_key(action.season, action.round, timedelta(hours=hours))] = "ok"
 
     # --- OpenF1: one call per round, with just the sessions that are ready ---
     by_round: dict[tuple[int, int], set[str]] = {}
