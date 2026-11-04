@@ -238,3 +238,27 @@ feeding the model result-based rows was not inflating the held-out Brier
 numbers. Places off isn't comparable with the earlier column: it is now
 scored on the simulator's order (the change above) against the as-of
 baseline, so after qualifying it is close to the as-of grid by design.
+
+### Not merged: leaving out races stopped early (branch `fix/shortened-races`)
+
+2021 Belgium (one lap behind the safety car, half points, "result" = the
+grid) is a training target and feeds form, track-history and DNF numbers.
+This branch leaves races with reduced points out of the feature table
+(`features/race_features.shortened_race_sessions`; their points still count
+in the standings and a predicted one is still scored). Held-out, as of each
+cutoff, 34 races (improvement over baseline, without → with):
+
+| Stage | Win Brier | Podium Brier | Places off |
+| --- | --- | --- | --- |
+| Pre-weekend | +7.8% → +9.1% | +2.1% → +2.9% | +4.6% → +4.6% |
+| Practice | +9.1% → +10.1% | +17.8% → +17.4% | +6.3% → +5.2% |
+| Post-quali | −1.3% → −0.8% | +2.9% → +2.9% | +0.3% → +0.3% |
+
+Mixed and small, from removing one race of 192 (20 of 3,876 rows). It also breaks
+`tests/test_stability.py::test_practice_tiny_pace_change_tiny_effect`: on
+2026 Mexico a 0.01% change in Verstappen's short-run pace moves a chance by
+8.1 points (limit 3; 1.9 without the change). That says more about the
+model than about this fix: the monotone constraints fix the DIRECTION of
+practice pace's effect, not its size, so retraining on slightly different
+data can put a tree split right at a driver's value. Every new race does
+that too. Decision left open.

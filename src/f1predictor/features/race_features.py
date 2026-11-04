@@ -83,6 +83,41 @@ POST_QUALI_FEATURES = [
 # shows). It's kept for the pre-weekend/practice stages in Phase 3, where there
 # is no grid yet. Decision recorded in docs/PRD.md, 2026-11-02.
 
+# Races that were stopped early and awarded REDUCED points are left out of
+# this table altogether (architecture review, 2026-11-03). The case in our
+# data: 2021 Belgium, one lap behind the safety car in the rain, half points.
+# Its "result" is just the grid order (20 classified finishers), so as a
+# training target it teaches the model that the grid never changes, and it
+# would count as a real race in every form / track-history / DNF number
+# (two cars that never raced get a "finish"). Left out:
+#     * not a training target, not in any history feature or DNF rate;
+#     * its (half) points still count in the championship features, which
+#       are computed straight from `results` (championship.py), as in F1;
+#     * it is still SCORED if it was predicted (the scorer reads the result
+#       from `results`, not from this table), so a shortened live race is
+#       graded like any other: the prediction was made before anyone knew.
+# How it's spotted: the winner scored less than a full win's points. Both
+# F1 rule sets since 2010 cut points only when too little of the race was
+# run. A long race with full points (2022 Japan: 28 of 53 laps after a
+# delay, full points under that year's rules) is real racing and stays.
+# Lap counts can't be used: Bahrain 2020's outer-loop race ran 87 laps, so
+# every normal Bahrain race looks "short" next to it.
+FULL_WIN_POINTS = 25
+
+
+def shortened_race_sessions(conn: sqlite3.Connection) -> set[int]:
+    """Race session_ids that were stopped early with reduced points (see above)."""
+    return {row[0] for row in conn.execute(
+        """
+        SELECT r.session_id
+        FROM results r
+        JOIN sessions s ON s.session_id = r.session_id AND s.session_type = 'R'
+        GROUP BY r.session_id
+        -- > 0: a race whose points aren't loaded (NULL / 0) is not "shortened".
+        HAVING MAX(r.points) > 0 AND MAX(r.points) < ?
+        """, (FULL_WIN_POINTS,))}
+
+
 # How many past races count as "recent form". The PRD says 3-5; 5 smooths
 # out one-off bad weekends a little more. A tunable knob for later.
 FORM_WINDOW = 5
@@ -90,6 +125,7 @@ FORM_WINDOW = 5
 
 def load_race_rows(conn: sqlite3.Connection) -> pd.DataFrame:
     """Every driver in every race, joined with that weekend's qualifying.
+    (Except races stopped early with reduced points: shortened_race_sessions.)
 
     One row per (race, driver). Plain SQL does the joining, then pandas takes
     over for the running averages (which are painful to write in SQL).
@@ -121,7 +157,10 @@ def load_race_rows(conn: sqlite3.Connection) -> pd.DataFrame:
         ORDER BY e.race_date, r.session_id, r.driver_id
     """
     # pd.read_sql_query runs the SQL and returns a DataFrame with the same columns.
-    return pd.read_sql_query(query, conn)
+    rows = pd.read_sql_query(query, conn)
+    # Races stopped early with reduced points aren't real results (see
+    # FULL_WIN_POINTS above): left out of training and of every history feature.
+    return rows[~rows["session_id"].isin(shortened_race_sessions(conn))].reset_index(drop=True)
 
 
 def _add_same_weekend_features(df: pd.DataFrame) -> pd.DataFrame:
