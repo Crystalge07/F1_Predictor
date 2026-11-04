@@ -8,7 +8,8 @@ import { Layout } from "./components/Layout";
 import { NextRace } from "./pages/NextRace";
 import { Why } from "./pages/Why";
 import { Scorecard } from "./pages/Scorecard";
-import { PastRaces } from "./pages/PastRaces";
+import { PastRace, PastRaces } from "./pages/PastRaces";
+import { About } from "./pages/About";
 
 export function AppRoutes() {
   return (
@@ -18,6 +19,8 @@ export function AppRoutes() {
         <Route path="why" element={<Why />} />
         <Route path="scorecard" element={<Scorecard />} />
         <Route path="races" element={<PastRaces />} />
+        <Route path="races/:key" element={<PastRace />} />
+        <Route path="about" element={<About />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
