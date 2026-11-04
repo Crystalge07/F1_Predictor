@@ -141,6 +141,24 @@ def test_the_dashboard_is_exported_after_the_database_is_safe(workflow):
     assert 'hash\'])")@${GITHUB_SHA}"' in export["run"]
 
 
+def test_every_run_pings_the_dead_mans_switch(workflow):
+    # The outside check (healthchecks.io) emails if pings stop for 3 hours:
+    # the only alert that still works when the pipeline doesn't run at all.
+    steps = workflow["jobs"]["tick"]["steps"]
+    names = [s.get("name") for s in steps]
+    ping = steps[names.index("Ping the dead-man's switch")]
+    # Always: also after a failed step (then it pings ".../fail").
+    assert ping["if"] == "always()"
+    assert ping["env"]["HEALTHCHECK_URL"] == "${{ secrets.HEALTHCHECK_URL }}"
+    assert '"$HEALTHCHECK_URL/fail"' in ping["run"]
+    # Without the secret it does nothing, and a failed ping never fails the run.
+    assert 'if [ -z "$HEALTHCHECK_URL" ]' in ping["run"] and '|| echo "ping failed (ignored)"' in ping["run"]
+    # After the work (the database is saved, the site deployed) and before
+    # the step that fails the run on purpose to email an alert.
+    assert names.index("Package the site for GitHub Pages") < names.index("Ping the dead-man's switch") \
+        < names.index("Fail if the tick raised a new alert")
+
+
 def test_pages_deploys_only_when_changed_even_if_the_tick_alerted(workflow):
     pages = workflow["jobs"]["pages"]
     assert pages["needs"] == "tick"

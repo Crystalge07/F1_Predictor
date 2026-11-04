@@ -10,7 +10,9 @@
 #   5. exports the dashboard's data (scripts/export_dashboard.py) and, if it
 #      or the code changed since the live site was deployed, deploys the
 #      site to GitHub Pages (the "pages" job below),
-#   6. fails the run if the tick raised a NEW alert, so GitHub emails about it.
+#   6. pings an outside dead-man's switch (healthchecks.io), which emails if
+#      the pings stop for 3 hours, i.e. if the pipeline stops running at all,
+#   7. fails the run if the tick raised a NEW alert, so GitHub emails about it.
 #
 # Off until the repository variable PIPELINE_ENABLED is set to "true"
 # (Settings -> Secrets and variables -> Actions -> Variables).
@@ -142,6 +144,22 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
+
+      - name: Ping the dead-man's switch
+        # healthchecks.io expects a ping every hour and emails when none has
+        # come for 3 hours (period 1h + grace 2h): the one alert that works
+        # when nothing runs at all. "/fail" if an earlier step failed (it
+        # emails at once). always(): it must ping even after a failure.
+        # Does nothing until the repository secret HEALTHCHECK_URL is set.
+        if: always()
+        env:
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ -z "$HEALTHCHECK_URL" ]; then echo "no HEALTHCHECK_URL secret: not pinging"; exit 0; fi
+          if [ "$JOB_STATUS" = "success" ]; then url="$HEALTHCHECK_URL"; else url="$HEALTHCHECK_URL/fail"; fi
+          # A failed ping must never fail the run itself.
+          curl -fsS -m 10 --retry 3 "$url" > /dev/null && echo "pinged ($JOB_STATUS)" || echo "ping failed (ignored)"
 
       - name: Fail if the tick raised a new alert
         if: steps.tick.outputs.code != '0'
