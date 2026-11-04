@@ -81,7 +81,7 @@ Requires Python 3.10+.
 python3 -m venv .venv            # create an isolated environment for this project
 source .venv/bin/activate        # activate it (run this in every new terminal)
 pip install -e ".[dev]" -c requirements.lock   # the project + dev tools, at the tested versions
-pip install -e ".[dashboard]"    # optional: the Streamlit results page
+pip install -e ".[dashboard]"    # optional: the Phase 2 Streamlit page (post-quali only; the real dashboard is web/)
 brew install libomp              # macOS only: the OpenMP runtime XGBoost needs
 ```
 

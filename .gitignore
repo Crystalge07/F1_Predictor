@@ -9,7 +9,7 @@ dist/
 .venv/
 
 # --- Local data ---
-# The SQLite database and the FastF1 cache are large and can always be rebuilt
+# The SQLite database (and its backups) are large and can always be rebuilt
 # by running the backfill script, so they never go into git.
 data/
 # ...except the dashboard's test data: a small export of the simulated test

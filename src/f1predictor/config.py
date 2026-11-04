@@ -31,12 +31,6 @@ DATA_DIR: Path = PROJECT_ROOT / "data"
 # The SQLite database file: a single file holding all of our tables.
 DB_PATH: Path = DATA_DIR / "f1.sqlite"
 
-# FastF1 caches the raw API responses it downloads, so a session loaded once
-# loads from disk in seconds the next time instead of re-downloading.
-# This is separate from our database: the cache holds FastF1's raw data,
-# while the database holds the cleaned subset we choose to keep.
-FASTF1_CACHE_DIR: Path = DATA_DIR / "fastf1_cache"
-
 # Where the SQL file that defines our tables will live (written in Step 2).
 # Trained models are saved here (gitignored with the rest of data/; any model
 # can be rebuilt by rerunning its training script).
@@ -47,9 +41,10 @@ SCHEMA_PATH: Path = Path(__file__).resolve().parent / "db" / "schema.sql"
 # Seasons to backfill
 # ---------------------------------------------------------------------------
 
-# 2018 is the earliest season FastF1 has lap-level timing data for, so it's the
-# practical floor for lap and practice features. (Jolpica has results back to
-# 1950, but results without lap data can't feed most of our features.)
+# 2018: the first season of the training history. (It was chosen as FastF1's
+# first season with lap timing; FastF1 was dropped for OpenF1, whose lap data
+# starts in 2023, so 2018-2022 now have results and qualifying only. Jolpica
+# has results back to 1950, but older seasons add little to today's model.)
 FIRST_SEASON: int = 2018
 
 # The latest season to backfill. Written explicitly rather than computed from
@@ -98,4 +93,3 @@ def ensure_data_dirs() -> None:
     # parents=True also creates any missing parent folders.
     # exist_ok=True means "don't raise an error if it's already there".
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    FASTF1_CACHE_DIR.mkdir(parents=True, exist_ok=True)

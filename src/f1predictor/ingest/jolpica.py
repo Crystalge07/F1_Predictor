@@ -146,7 +146,7 @@ def to_utc_timestamp(date: str, time: str | None) -> str | None:
     ('2021-07-16', None)        -> None
 
     Older seasons only have dates for some sessions. We return None rather
-    than guessing a time; the FastF1 loader fills in exact times later.
+    than guessing a time; the OpenF1 loader fills in exact times later.
     """
     if not time:
         return None
@@ -156,7 +156,8 @@ def to_utc_timestamp(date: str, time: str | None) -> str | None:
 def event_format(race: dict) -> str:
     """Work out the weekend format from which session keys the race has.
 
-    Names match FastF1's EventFormat values so both sources agree.
+    (The names were taken from FastF1's EventFormat values, from before the
+    project switched to OpenF1; they're just labels now.)
     """
     if "SprintQualifying" in race:
         return "sprint_qualifying"   # 2024+: FP1, SQ, Sprint, Q, Race
@@ -269,7 +270,7 @@ def upsert_session(
             session_name = excluded.session_name,
             -- COALESCE returns its first non-NULL argument. So if this load
             -- has no time (older seasons), keep the time already stored
-            -- (e.g. one FastF1 filled in) instead of wiping it with NULL.
+            -- (e.g. one OpenF1 filled in) instead of wiping it with NULL.
             start_time_utc = COALESCE(excluded.start_time_utc, sessions.start_time_utc)
         """,
         (event_id, session_type, session_name, start_time_utc),
