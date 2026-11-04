@@ -158,3 +158,34 @@ were made:
 Pre-weekend is unchanged (it uses none of the changed inputs). The Phase 4
 replay runs in the prediction log were made by the old code (their
 `model_version` says so) and were not re-run.
+
+## Architecture-review fixes (2026-11-03, branch `fix/architecture-review`)
+
+### The predicted order now follows the odds
+
+`predicted_rank` used to be the position model's raw order, while the win /
+podium / points chances come from the simulator, which blends that order
+with the stage's anchor (90% grid after qualifying). The two could disagree:
+in 5 of 19 post-quali replay runs (3 of 19 practice) the driver ranked 1st
+was not the favourite to win. 2026 R2: Russell ranked 1st at 31% to win,
+Antonelli 5th at 40% (he was on pole).
+
+From this date `predicted_rank` is the simulator's order: drivers sorted by
+the blended score the Monte Carlo starts from (`predict/stage.py`). The
+raw model order is still recoverable from the stored `expected_position`
+(`predict/stage.model_order`). On the 58 runs logged up to then (in-sample):
+
+| Stage | Ranked 1st = favourite (old → new) | Podium-chance contradictions > 5 pts | Places off (old → new) |
+| --- | --- | --- | --- |
+| Pre-weekend | 20/20 → 20/20 | 4 → 0 | 3.719 → 3.720 |
+| Practice | 16/19 → 19/19 | 2 → 0 | 3.651 → 3.651 |
+| Post-quali | 14/19 → 19/19 | 65 → 0 | 3.469 → 3.440 |
+
+**What this changes in scoring.** Places off and Spearman are scored on
+`predicted_rank`, so from now on they measure the order the dashboard
+shows. Runs already in the log keep the old meaning (the log can't be
+edited): the 2026 backtest and the first rehearsal run (run 58, 2026 R20
+pre-weekend; at that stage the two orders almost always agree). Every 2027
+live run uses the new definition. The held-out "places off" numbers above
+were measured on the model's raw order and are not re-stated. The win and
+podium probabilities, and so every Brier number, are unchanged.

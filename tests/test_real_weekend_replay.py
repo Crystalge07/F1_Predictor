@@ -37,7 +37,7 @@ from f1predictor.pipeline.tick import run_tick
 from f1predictor.predict import stage
 
 from replay_f1 import ReplayF1
-from test_probability_invariants import invariant_problems
+from test_probability_invariants import invariant_problems, order_problems
 
 START = datetime(2026, 10, 26, 0, 0, tzinfo=timezone.utc)    # Monday after Austin
 END = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)      # Tuesday after Mexico City
@@ -249,6 +249,8 @@ def test_logged_runs_obey_probability_invariants(replay):
         rows = pd.read_sql_query("SELECT * FROM predictions WHERE run_id = ?", conn,
                                  params=(run["run_id"],))
         assert len(rows) == 22, f"R{rnd} {stage_name}: {len(rows)} drivers logged"
-        if invariant_problems(rows):
-            problems[f"R{rnd} {stage_name}"] = invariant_problems(rows)
+        # These runs are made by the current code, so the order rule applies too.
+        found = invariant_problems(rows) + order_problems(rows)
+        if found:
+            problems[f"R{rnd} {stage_name}"] = found
     assert problems == {}

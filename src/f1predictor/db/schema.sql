@@ -406,6 +406,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     driver_id         TEXT NOT NULL REFERENCES drivers (driver_id),
     constructor_id    TEXT REFERENCES constructors (constructor_id),
     -- 1..N: the predicted finishing order (what MAE / Spearman are scored on).
+    -- Since 2026-11-03 the simulator's order (predict/stage.py); runs logged
+    -- before that used the position model's raw order.
     predicted_rank    INTEGER NOT NULL,
     -- The anchor the simulator blends with: the grid slot after qualifying,
     -- championship / practice order before it (simulate/probabilities.py).

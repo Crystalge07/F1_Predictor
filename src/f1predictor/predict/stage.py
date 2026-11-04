@@ -12,11 +12,11 @@ What happens, in order:
                  list and grid never come from the result).
     2. train     the stage's position model (features/stages.py), trained on
                  every race BEFORE this one, with the frozen 2026 weight.
-    3. predict   expected finishing position per driver (if they finish),
-                 and the model's order: that's `predicted_rank`.
+    3. predict   expected finishing position per driver (if they finish).
     4. DNF       each driver's chance of not finishing (models/dnf.py).
     5. simulate  Monte Carlo from the anchor/model blend (simulate/
                  probabilities.py, frozen settings): p_win, p_podium, ...
+                 The blend's order is `predicted_rank`.
     6. explain   SHAP contribution of every feature (explain/contributions.py).
     7. log       one prediction_runs row, one predictions row per driver, one
                  prediction_features row per driver per feature, all in ONE
@@ -26,11 +26,25 @@ Steps 1-6 are make_prediction() (reads only); step 7 is write_run(). Keeping
 them apart lets tests check a prediction without touching the log, and lets
 the replay script print a run before deciding to store it.
 
-Which order is `predicted_rank`? The position model's own order (lowest
-expected position first), the same order the Phase 2/3 finishing-order
-numbers (MAE, Spearman) were measured on. The simulator's view is stored
-alongside it: `anchor_position` (the grid / championship / practice slot it
-blends with) and `mean_position` (the average simulated place).
+Which order is `predicted_rank`? The SIMULATOR'S order (decision 2026-11-03,
+docs/evaluation-protocol.md): drivers sorted by the blended score the Monte
+Carlo starts from (anchor_weight x anchor slot + the rest x model order,
+simulate/probabilities.blend_with_grid). It is the order the win / podium /
+points chances are built from, so the table and its odds agree: the driver
+ranked 1st is the favourite to win.
+
+Before that date it was the position model's raw order (lowest expected
+position first). That order could contradict the odds shown next to it: at
+2026 R2 after qualifying, Russell was ranked 1st with a 31% win chance and
+Antonelli 5th with 40%, because the odds lean 90% on the grid (Antonelli was
+on pole) and the raw order didn't at all. Runs logged before the change
+keep the old meaning (the log can't be edited). On the 58 runs logged up to
+then, the blended order put the favourite first in all of them (vs 50) and
+scored the same on places off (3.44 vs 3.47 after qualifying, in-sample).
+
+The model's raw order isn't lost: `expected_position` (the model's own
+number) is stored for every driver, so ranking it gives that order back
+(see model_order below). SHAP explains `expected_position`.
 """
 
 import hashlib
@@ -111,6 +125,15 @@ def model_version() -> str:
     return f"{commit}+settings.{settings_hash}"
 
 
+def model_order(drivers: pd.DataFrame) -> pd.Series:
+    """The position model's raw order (1 = lowest expected_position), from a
+    run's driver rows: what `predicted_rank` meant before 2026-11-03, and
+    still the order to look at when asking "what did the model itself say,
+    before the anchor blend?". Ties: better anchor slot, then driver_id."""
+    ordered = drivers.sort_values(["expected_position", "anchor_position", "driver_id"])
+    return pd.Series(np.arange(1, len(ordered) + 1), index=ordered.index).reindex(drivers.index)
+
+
 # -----------------------------------------------------------------------------
 # Steps 1-6: the prediction itself (reads the database, writes nothing)
 # -----------------------------------------------------------------------------
@@ -138,8 +161,7 @@ def make_prediction(conn: sqlite3.Connection, event_id: int, stage: str,
         raise ValueError(f"No earlier races to train on for event {event_id}")
     model = train_model(history, WEIGHT_2026, columns=STAGE_FEATURES[stage])
 
-    # 3. Expected positions, and the model's order (ties: anchor slot, then
-    # driver_id, so the order is always the same).
+    # 3. Expected positions: the model's own number for each driver.
     anchor_column, anchor_weight, noise_sd = STAGE_SETTINGS[stage]
     race = add_baseline_ranks(race)          # champ_rank / practice_rank for this race
     if race[anchor_column].isna().any():
@@ -147,8 +169,9 @@ def make_prediction(conn: sqlite3.Connection, event_id: int, stage: str,
         # there's no practice order to anchor on.
         raise ValueError(f"Event {event_id}, stage {stage}: no {anchor_column} for every driver")
     race = predict_positions(model, race)
+    # A fixed row order before blending: blend_with_grid breaks exact ties in
+    # the model's numbers by row order, so this keeps every run reproducible.
     race = race.sort_values(["expected_position", anchor_column, "driver_id"]).reset_index(drop=True)
-    race["predicted_rank"] = np.arange(1, len(race) + 1)
 
     # 4. DNF chances: computed over the history plus this race's rows. Every
     # rate only looks at EARLIER races (models/dnf._past_rolling_sum), so the
@@ -161,13 +184,19 @@ def make_prediction(conn: sqlite3.Connection, event_id: int, stage: str,
     race = race.assign(anchor_position=race[anchor_column])
     simulated = race_probabilities(race, noise_sd=noise_sd, grid_weight=anchor_weight,
                                    anchor_column=anchor_column, n_sims=n_sims, seed=seed)
-    # race_probabilities overwrites expected_position with the blend; keep the
-    # model's raw number (that's what the log's expected_position means).
-    drivers = (race[["driver_id", "constructor_id", "predicted_rank", "anchor_position",
-                     "expected_position", "dnf_prob"]]
+    # race_probabilities overwrites expected_position with the blend. The
+    # blend is the simulator's starting score, so ITS order is the predicted
+    # order (module docstring): lowest score first; exact ties go to the
+    # better anchor slot, then driver_id, so the order is always the same.
+    simulated = simulated.rename(columns={"expected_position": "blended_score"})
+    simulated = simulated.sort_values(["blended_score", anchor_column, "driver_id"]).reset_index(drop=True)
+    simulated["predicted_rank"] = np.arange(1, len(simulated) + 1)
+    # Keep the model's raw number in expected_position (that's what the log's
+    # expected_position means, and what SHAP explains).
+    drivers = (race[["driver_id", "constructor_id", "anchor_position", "expected_position", "dnf_prob"]]
                .rename(columns={"dnf_prob": "p_dnf"})
-               .merge(simulated[["driver_id", "p_win", "p_podium", "p_points", "mean_position"]],
-                      on="driver_id"))
+               .merge(simulated[["driver_id", "predicted_rank", "p_win", "p_podium", "p_points",
+                                 "mean_position"]], on="driver_id"))
 
     # 6. SHAP: value and contribution of each feature the model used.
     explanation = explain_race(model, race)[["driver_id", "feature", "value", "contribution"]]
