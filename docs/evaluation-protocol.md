@@ -238,3 +238,73 @@ feeding the model result-based rows was not inflating the held-out Brier
 numbers. Places off isn't comparable with the earlier column: it is now
 scored on the simulator's order (the change above) against the as-of
 baseline, so after qualifying it is close to the as-of grid by design.
+
+### Stability fixes and races stopped early (2026-11-04, branch `fix/practice-smoothness-and-guard`)
+
+**Why.** Leaving out 2021 Belgium (below) broke
+`tests/test_stability.py`: on 2026 Mexico, 0.01% (~9 ms) of Verstappen's
+short-run pace moved a chance by 8.1 points (limit 3). Rather than loosen
+the test, every calibration and held-out race was surveyed the same way
+(each driver's short-run gap, long-run gap and qualifying gap nudged by
+0.01, one at a time; worst change in anyone's win or podium chance). The
+model as merged already had jumps up to 13.9 points (2024 Miami) in six
+races; the test had only ever looked at Mexico. The monotone constraints
+fixed the DIRECTION of pace's effect, not its size.
+
+**Three steps, each now a slope** (code, not settings: `tuned_settings.json`
+is unchanged and stays frozen):
+
+| Step | Example | Fix |
+| --- | --- | --- |
+| XGBoost splits are steps | 2024 Miami: Sainz +0.33 places for 9 ms | prediction averaged over paces within ±0.05% (`models/position.PACE_SMOOTHING`); SHAP contributions averaged the same way |
+| the blend used the model's order as a plain rank | Mexico 8.1 points: two near-tied drivers swapped a whole place | smooth order, near-ties share places (`simulate/probabilities.model_order`, `RANK_SMOOTHING` 0.2) |
+| the practice stage's anchor, the practice order, is a plain rank of best laps | 2026 R12: Norris/Russell 5 ms apart swapped places | near-tied laps smoothed in the blend (`anchor_places`, 0.05%); the stored integer `practice_rank` is unchanged |
+
+The widths were chosen on stability alone. On the calibration races every
+width tried (rank smoothing 0–0.3, pace band 0–0.1%) gave the same total
+Brier to within 0.1% at every stage. Of those, these were the smallest
+that kept every surveyed race under 3 points.
+
+Stability, all 71 surveyed races (worst move in points; 0.01 nudge):
+
+| Input | Before: max / mean / races > 3 | After: max / mean / races > 3 |
+| --- | --- | --- |
+| Short-run gap (practice) | 13.9 / 1.50 / 6 | 2.1 / 0.53 / 0 |
+| Long-run gap (practice) | 4.5 / 0.09 / 1 | 1.8 / 0.11 / 0 |
+| Qualifying gap (post-quali, 67 races) | 1.8 / 0.07 / 0 | 0.4 / 0.11 / 0 |
+
+`tests/test_stability.py` now checks the six worst races, not just Mexico.
+
+**Races stopped early.** 2021 Belgium (one lap behind the safety car, half
+points, "result" = the grid) was a training target and fed form,
+track-history and DNF numbers. Races with reduced points are now left out
+of the feature table (`features/race_features.shortened_race_sessions`;
+their points still count in the standings, and a predicted one is still
+scored). That's one race of 192 (20 of 3,876 rows).
+
+**Held-out**, as of each cutoff (`scripts/replay_season.py`, 2025 + 2026
+rounds 10+, 34 races; improvement over baseline, positive = better):
+
+| Stage | Measure | Before | + smoothing | + races stopped early |
+| --- | --- | --- | --- | --- |
+| Pre-weekend | Win Brier | +7.8% | +8.1% | +9.7% |
+| | Podium Brier | +2.1% | +3.1% | +3.7% |
+| | Places off | +4.6% | +4.5% | +5.6% |
+| Practice | Win Brier | +9.1% | +9.5% | +10.0% |
+| | Podium Brier | +17.8% | +18.0% | +18.1% |
+| | Places off | +6.3% | +5.4% | +5.4% |
+| Post-quali | Win Brier | −1.3% | −1.4% | −0.9% |
+| | Podium Brier | +2.9% | +2.8% | +2.9% |
+| | Places off | +0.3% | +0.3% | +0.3% |
+
+The smoothing is roughly neutral; its point is stability. Practice places
+off is a little worse (3.51 → 3.54 places) and its Brier scores a little
+better. Leaving out the race stopped early helps or ties on every measure.
+
+**Honest caveat.** The held-out set was looked at twice for the
+stopped-early change: once alone (mixed: practice podium +17.8% → +17.4%,
+places off 6.3% → 5.2%, and the stability failure, so it wasn't merged),
+then again on top of the smoothing. It is a data correction (that race's
+"result" isn't a race result), not a tuning choice, and nothing was
+picked from either look. Still, read these 2025/2026 numbers as in-sample;
+2027 live remains the real test.

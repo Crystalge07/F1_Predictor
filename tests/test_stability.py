@@ -11,19 +11,26 @@ Two levels, as in test_monotonicity.py:
    0.01 places moves chances by far less than a point. With the seed fixed,
    only simulations where two cars were within 0.01 of each other change.
 
-2. The real trained model, 2026 R19 (skipped without the database). Two steps
-   are NOT smooth:
+2. The real trained model (skipped without the database): 2026 R19, plus
+   the races where a survey of every calibration and held-out race found
+   the biggest jumps (2026-11-04). Three steps used to be steps, not slopes:
      * XGBoost is piecewise constant: crossing a split threshold makes the
-       raw prediction jump.
-     * the blend uses the model's ORDER (rank), so a jump that passes another
-       driver moves the start by a whole place times the model weight.
-   Before the fix (was BUG 7), 0.01% more practice gap for Piastri moved
-   someone's chance by 16 points: Piastri crossed a split the WRONG way
-   (better prediction for a slower lap, 7.6 -> 6.1) and passed two drivers
-   in the model's order. With monotone constraints
-   (models/position.MONOTONE_DIRECTIONS) the jumps can only go the right
-   way and are smaller: worst move now 1.9 points (practice) and 0
-   (post-quali qualifying gap).
+       raw prediction jump (2024 Miami: Sainz +0.33 places for 9 ms).
+       Fix: predictions are averaged over nearby paces
+       (models/position.PACE_SMOOTHING).
+     * the blend used the model's ORDER as a plain rank, so a jump that
+       passed another driver moved the start by a whole place times the
+       model weight (2026 Mexico with 2021 Spa left out of training: 8.1
+       points). Fix: a smooth order (simulate/probabilities.model_order).
+     * the practice stage's anchor, the practice order, is a plain rank of
+       best laps too: two laps 5 ms apart swapped places (2026 R12: 5.8
+       points). Fix: smooth near-ties in the blend
+       (simulate/probabilities.PRACTICE_ORDER_SMOOTHING).
+   Before any of this (was BUG 7), 0.01% more practice gap for Piastri
+   moved someone's chance by 16 points: Piastri crossed a split the WRONG
+   way (better prediction for a slower lap). Monotone constraints
+   (models/position.MONOTONE_DIRECTIONS) fixed the direction, not the size:
+   the survey still found 14 points (2024 Miami) before the fixes above.
 """
 
 import numpy as np
@@ -58,11 +65,12 @@ def test_simulator_tiny_change_tiny_effect():
 # 2. The real trained model
 # -----------------------------------------------------------------------------
 
-def worst_move(stage: str, feature: str, nudge: float) -> tuple[float, str | None]:
+def worst_move(stage: str, feature: str, nudge: float,
+               season: int = real_db.SEASON, rnd: int = real_db.ROUND) -> tuple[float, str | None]:
     """Nudge each driver's `feature` by `nudge`, one driver at a time; return
     the biggest change in anyone's p_win / p_podium, and whose nudge caused it.
     Drivers with no value for the feature (NaN) are skipped."""
-    model, race = real_db.stage_setup(stage)
+    model, race = real_db.stage_setup(stage, season, rnd)
     base = real_db.probabilities(model, race, stage)
     worst = (0.0, None)
     for driver in race["driver_id"]:
@@ -90,6 +98,13 @@ def test_tiny_change_tiny_effect(stage, feature, nudge):
     assert move <= MAX_MOVE, f"nudging {driver}'s {feature} by {nudge} moved a chance by {move:.3f}"
 
 
-def test_practice_tiny_pace_change_tiny_effect():
-    move, driver = worst_move("practice", "short_run_gap_pct", 0.01)
-    assert move <= MAX_MOVE, f"nudging {driver}'s short_run_gap_pct by 0.01 moved a chance by {move:.3f}"
+# The worst races in the 2026-11-04 survey of all 71 calibration and held-out
+# races, worst move before -> after the smoothing fixes (points):
+# 2024 R6 13.9 -> 0.6, 2024 R10 2.6 -> 0.7, 2026 R8 5.3 -> 0.6,
+# 2026 R10 7.3 -> 0.4, 2026 R12 2.6 -> 1.3, 2026 R19 1.9 -> 0.6.
+# (docs/evaluation-protocol.md, "Stability fixes and races stopped early".)
+@pytest.mark.parametrize("season, rnd", [(2026, 19), (2024, 6), (2024, 10), (2026, 8), (2026, 10), (2026, 12)])
+def test_practice_tiny_pace_change_tiny_effect(season, rnd):
+    move, driver = worst_move("practice", "short_run_gap_pct", 0.01, season, rnd)
+    assert move <= MAX_MOVE, (f"{season} R{rnd}: nudging {driver}'s short_run_gap_pct by 0.01 "
+                              f"moved a chance by {move:.3f}")

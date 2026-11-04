@@ -177,8 +177,10 @@ def make_prediction(conn: sqlite3.Connection, event_id: int, stage: str,
         # there's no practice order to anchor on.
         raise ValueError(f"Event {event_id}, stage {stage}: no {anchor_column} for every driver")
     race = predict_positions(model, race)
-    # A fixed row order before blending: blend_with_grid breaks exact ties in
-    # the model's numbers by row order, so this keeps every run reproducible.
+    # A fixed row order before blending. The blend's smooth order gives exact
+    # ties a shared place, so row order no longer decides anything there; it
+    # keeps the simulator's driver order (and so its random draws) the same
+    # from run to run.
     race = race.sort_values(["expected_position", anchor_column, "driver_id"]).reset_index(drop=True)
 
     # 4. DNF chances: computed over the history plus this race's rows. Every

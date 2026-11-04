@@ -25,8 +25,11 @@ so on the dashboard these are "why the model rates this driver here", not
 "why their win chance is exactly 31%".
 """
 
+import numpy as np
 import pandas as pd
 import xgboost as xgb
+
+from f1predictor.models.position import shifted_inputs
 
 # Plain-English names for the dashboard and printouts.
 FEATURE_LABELS = {
@@ -57,12 +60,16 @@ def explain_race(model: xgb.XGBRegressor, race: pd.DataFrame) -> pd.DataFrame:
         contribution (places; negative = helped), baseline, predicted
     """
     columns = list(model.feature_names_in_)
+    # The prediction is the model averaged over nearby paces
+    # (models/position.PACE_SMOOTHING), so the contributions are averaged over
+    # the same inputs. SHAP values add up, so the averages still sum exactly
+    # to the (smoothed) prediction.
     # DMatrix is XGBoost's own data container; the low-level booster needs it.
     # missing=nan tells it NaN means "unknown" (the same as during training).
-    matrix = xgb.DMatrix(race[columns], missing=float("nan"))
     # Shape (n_drivers, n_features + 1). The LAST column is the baseline (XGBoost
     # calls it the bias): the same number for every driver.
-    contribs = model.get_booster().predict(matrix, pred_contribs=True)
+    contribs = np.mean([model.get_booster().predict(xgb.DMatrix(X, missing=float("nan")), pred_contribs=True)
+                        for X in shifted_inputs(race, columns)], axis=0)
     baseline = contribs[:, -1]
     predicted = contribs.sum(axis=1)   # = the model's prediction, exactly
 
