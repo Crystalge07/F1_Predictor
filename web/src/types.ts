@@ -114,6 +114,7 @@ export interface Race {
   result: ResultRow[] | null;
   drivers: Record<string, DriverInfo>;
   teams: Record<string, string>;
+  feature_labels: Record<string, string>; // "driver_form_finish" -> "recent finishes (last 5)"
 }
 
 // --- data/scorecard.json --------------------------------------------------------
@@ -126,14 +127,31 @@ export interface ScorecardMetric {
   higher_is_better: boolean | null;
 }
 
+export interface RaceScores {
+  season: number;
+  round: number;
+  name: string;
+  metrics: Record<string, { model: number | null; baseline: number | null }>;
+}
+
+export interface CalibrationBin {
+  from: number; // predicted chance from..to (the last includes 1)
+  to: number;
+  n: number; // drivers in this group
+  predicted: number | null; // their average predicted chance
+  observed: number | null; // how often it happened
+}
+
 export interface ScorecardGroup {
   season: number;
   mode: Mode;
   label: string; // must be shown with the numbers (never mix groups)
   stages: Partial<Record<Stage, Record<string, ScorecardMetric>>>;
+  per_race: Partial<Record<Stage, RaceScores[]>>; // calendar order
+  calibration: Partial<Record<Stage, { win: CalibrationBin[]; podium: CalibrationBin[] }>>;
 }
 
 export interface Scorecard {
   schema: number;
-  groups: ScorecardGroup[];
+  groups: ScorecardGroup[]; // most important first: live (newest season first), then backtest
 }

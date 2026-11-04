@@ -26,6 +26,9 @@
   --bar-track: #ecebe6;
   --grid: #e8e7e1;
   --axis: #8a8880;
+  /* The diverging pair (Why page): moved forward / moved back. */
+  --forward: #2a78d6;
+  --back: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -48,6 +51,8 @@
     --bar-track: #262b35;
     --grid: #252a33;
     --axis: #8b919c;
+    --forward: #3987e5;
+    --back: #e66767;
   }
 }
 
@@ -292,4 +297,167 @@ h2 { font-size: 18px; margin: 28px 0 8px; }
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* --- Why ----------------------------------------------------------------- */
+.pickers { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 16px 0 0; }
+.pickers label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.pickers select {
+  min-width: 220px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+.summary { margin-top: 0; }
+.caveat { margin: 16px 0 0; }
+
+.factor-scale {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin: 0 0 4px var(--factor-text-width);
+  padding-right: 3.5em;
+  font-size: 12px;
+  color: var(--axis);
+}
+.factor-scale span:first-child { text-align: right; padding-right: 8px; }
+.factor-scale span:last-child { padding-left: 8px; }
+.factor-chart { --factor-text-width: 38%; }
+.factors { margin: 0; padding: 0; list-style: none; }
+.factor {
+  display: grid;
+  grid-template-columns: var(--factor-text-width) minmax(0, 1fr) 3.5em;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.factor:last-child { border-bottom: 0; }
+.factor-text { display: flex; flex-direction: column; min-width: 0; }
+.factor-name { font-size: 14px; }
+.factor-value { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.factor-bar { display: grid; grid-template-columns: 1fr 1fr; height: 16px; }
+.factor-bar .half { display: flex; align-items: stretch; }
+.factor-bar .left { justify-content: flex-end; border-right: 1px solid var(--axis); }
+.factor-bar .bar { display: block; height: 100%; }
+/* 4px rounded at the data end, square at the centre line. */
+.factor-bar .forward { background: var(--forward); border-radius: 4px 0 0 4px; }
+.factor-bar .back { background: var(--back); border-radius: 0 4px 4px 0; }
+.factor-effect { text-align: right; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Phones: the factor name goes above its bar. */
+@media (max-width: 560px) {
+  .factor-chart { --factor-text-width: 0px; }
+  .factor { grid-template-columns: minmax(0, 1fr) 3.5em; }
+  .factor-text { grid-column: 1 / -1; }
+  .factor-scale { margin-left: 0; }
+}
+
+/* --- Scorecard ----------------------------------------------------------- */
+.banner {
+  margin: 16px 0 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-weight: 600;
+}
+.banner.is-backtest { border-style: dashed; color: var(--muted); }
+.banner.is-live { border-left: 4px solid var(--accent); }
+.small-sample { margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+.scorecard th[scope="row"] { font-size: 14px; font-weight: 600; color: var(--text); text-align: left; padding: 8px 6px; }
+.scorecard td { vertical-align: top; min-width: 7.5em; }
+.th-note { display: block; font-weight: 400; color: var(--muted); font-size: 11px; white-space: normal; }
+.score-model { font-weight: 600; }
+.score-baseline { color: var(--muted); }
+.chip {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* Text stays in text colours (never the chart colours): the arrow and the
+   word carry better / worse. */
+.chip.is-better, .chip.is-worse { color: var(--text); }
+.definitions { margin: 16px 0 0; display: grid; gap: 6px; font-size: 13px; }
+.definitions div { display: grid; grid-template-columns: 11em 1fr; gap: 8px; }
+.definitions dt { font-weight: 600; }
+.definitions dd { margin: 0; color: var(--muted); }
+@media (max-width: 560px) { .definitions div { grid-template-columns: 1fr; gap: 0; } }
+.tabs.compact { margin: 8px 0 12px; }
+.factor-bar .forward-right { background: var(--forward); border-radius: 0 4px 4px 0; }
+.factor-bar .back-left { background: var(--back); border-radius: 4px 0 0 4px; }
+.predictions tbody tr:last-child th { border-bottom: 0; }
+
+/* Phones: the scorecard grid stacks. Each measure is a block, with one line
+   per stage; the column headers are hidden, so each cell shows its label. */
+@media (max-width: 560px) {
+  .scorecard thead { display: none; }
+  .scorecard, .scorecard tbody, .scorecard tr { display: block; }
+  .scorecard tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .scorecard tbody tr:last-child { border-bottom: 0; }
+  .scorecard th[scope="row"] { display: block; padding: 0 0 4px; border: 0; }
+  .scorecard td {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 3px 0;
+    border: 0;
+    min-width: 0;
+  }
+  .scorecard td::before { content: attr(data-label); color: var(--muted); font-size: 12px; text-align: left; }
+  .scorecard .score { text-align: right; }
+  .scorecard .score-model, .scorecard .score-baseline { white-space: nowrap; }
+}
+
+/* --- Past races ---------------------------------------------------------- */
+.race-list { margin: 16px 0 0; padding: 0; list-style: none; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.race-list li + li { border-top: 1px solid var(--border); }
+.race-list a { display: flex; justify-content: space-between; gap: 12px; padding: 12px 16px; color: var(--text); text-decoration: none; }
+.race-list a:hover { background: var(--accent-soft); }
+.race-list-badges { display: flex; gap: 6px; flex-shrink: 0; }
+.badge { padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 12px; color: var(--muted); }
+.badge.is-live { border-color: var(--accent); color: var(--accent); }
+.comparison td[data-stage] { white-space: nowrap; }
+.off { color: var(--muted); font-size: 12px; }
+.non-starters { margin: 12px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
+.race-scores th[scope="row"] { font-size: 14px; font-weight: 600; color: var(--text); }
+
+/* --- About --------------------------------------------------------------- */
+.prose { max-width: 680px; }
+.prose ul { padding-left: 20px; }
+.prose li { margin: 4px 0; }
+
+/* --- Keyboard ------------------------------------------------------------ */
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -40px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  z-index: 10;
+}
+.skip-link:focus { top: 8px; }
+.main:focus { outline: none; }
+.nav-link:focus-visible, .brand:focus-visible, .race-list a:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Past race comparison: short stage names on phones; if it's still too
+   wide, the table scrolls inside its card, never the page. */
+.comparison .short { display: none; }
+.scroll-inside { overflow-x: auto; }
+@media (max-width: 560px) {
+  .comparison .long { display: none; }
+  .comparison .short { display: inline; }
+  .comparison td[data-stage] { padding-left: 2px; padding-right: 2px; }
+  .off { font-size: 11px; }
 }

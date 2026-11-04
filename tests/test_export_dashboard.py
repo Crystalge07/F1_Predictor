@@ -134,6 +134,17 @@ def test_names_and_teams_come_with_the_file_and_a_debutant_is_identified(exporte
     assert "n50" in race["drivers"]
 
 
+def test_every_factor_has_its_plain_english_name(exported):
+    # The Why page shows these names; they come from the one Python list
+    # (explain/contributions.FEATURE_LABELS), not a copy in the app.
+    from f1predictor.explain.contributions import FEATURE_LABELS
+    race = exported("races/2027-01.json")
+    used = {f["feature"] for run in race["runs"] for d in run["drivers"] for f in d["factors"]}
+    assert set(race["feature_labels"]) == used
+    assert race["feature_labels"] == {f: FEATURE_LABELS[f] for f in used}
+    assert race["feature_labels"]["grid"] == "starting position"
+
+
 def test_the_index_lists_the_calendar_and_the_next_race(world, exported, tmp_path):
     index = exported("index.json")
     [season] = index["seasons"]
@@ -171,6 +182,57 @@ def test_the_scorecard_is_the_scorers_summary_with_live_and_backtest_kept_apart(
         assert exported_row["model"] == pytest.approx(row.model, abs=5e-5)
     assert groups[(2027, "backtest")]["stages"]["post_quali"]["position_mae"]["races"] == 1
     assert list(groups[(2027, "backtest")]["stages"]) == ["post_quali"]
+    # Race by race and calibration are kept apart the same way: the backtest
+    # group has its one race (20 starters), the live group its two.
+    backtest = groups[(2027, "backtest")]
+    assert [r["round"] for r in backtest["per_race"]["post_quali"]] == [1]
+    assert sum(b["n"] for b in backtest["calibration"]["post_quali"]["podium"]) == 20
+    assert sum(b["n"] for b in groups[(2027, "live")]["calibration"]["post_quali"]["podium"]) == 40
+
+
+def test_the_scorecard_has_each_races_scores_exactly_as_scored(world, exported):
+    group = exported("scorecard.json")["groups"][0]
+    for stage, races in group["per_race"].items():
+        # One entry per scored race (rounds 1 and 2), each metric equal to the scores table.
+        assert [r["round"] for r in races] == [1, 2]
+        for race in races:
+            for metric, value in race["metrics"].items():
+                row = world.execute(
+                    "SELECT s.model_value, s.baseline_value FROM scores s JOIN prediction_runs r USING (run_id) "
+                    "JOIN events e USING (event_id) WHERE e.round = ? AND r.stage = ? AND r.mode = 'live' "
+                    "AND s.metric = ?", (race["round"], stage, metric)).fetchone()
+                assert value["model"] == pytest.approx(row[0], abs=5e-5)
+                assert (value["baseline"] is None) == (row[1] is None)
+
+
+def test_calibration_counts_every_starter_once_and_what_really_happened(world, exported):
+    # Calibration: drivers grouped by predicted chance; for each group, the
+    # average chance and how often it happened. Checked against a hand
+    # count: two scored races, 20 starters each, so 40 drivers per stage;
+    # exactly 2 winners and 6 podium finishers among them; and the average
+    # predicted chance is the logged one.
+    group = exported("scorecard.json")["groups"][0]
+    for stage, outcomes in group["calibration"].items():
+        for outcome, bins in outcomes.items():
+            assert sum(b["n"] for b in bins) == 40
+            happened = sum(b["n"] * b["observed"] for b in bins)
+            # (rates are rounded to 4 places, like every number in the files)
+            assert happened == pytest.approx({"win": 2, "podium": 6}[outcome], abs=0.002)
+            for b in bins:
+                assert b["from"] <= b["predicted"] <= b["to"]
+            # Total predicted chance = the logged chances of the drivers who
+            # STARTED (the scorer's rule: d05 and d12, replaced in round 2,
+            # drop out of the pre-weekend run; a debutant's temporary id
+            # counts as the driver he turned out to be, and both started).
+            column = {"win": "p_win", "podium": "p_podium"}[outcome]
+            total = world.execute(
+                f"SELECT SUM(p.{column}) FROM predictions p JOIN prediction_runs r USING (run_id) "
+                "JOIN events e USING (event_id) JOIN sessions rs ON rs.event_id = e.event_id AND rs.session_type = 'R' "
+                "WHERE r.mode = 'live' AND r.stage = ? AND e.round <= 2 AND (p.driver_id LIKE 'provisional_%' "
+                "OR p.driver_id IN (SELECT driver_id FROM results WHERE session_id = rs.session_id))",
+                (stage,)).fetchone()[0]
+            # (each group average is rounded to 4 places: up to 40 x 0.00005 in total)
+            assert sum(b["n"] * b["predicted"] for b in bins) == pytest.approx(total, abs=0.002)
 
 
 # -----------------------------------------------------------------------------

@@ -2,7 +2,28 @@
 
 A self-updating F1 prediction system: one model for every Grand Prix, refreshed after each session, with a public scorecard of its own accuracy. See [docs/PRD.md](docs/PRD.md) for the full spec.
 
-**Status:** Phases 1–4 done. Phase 4 replayed the 2026 season race by race as if live: every stage's prediction is built only from what was known at that moment (including the official starting grid from OpenF1 instead of the race result), written to an append-only prediction log with its inputs and SHAP contributions, and scored after the race against that stage's baseline. Tuned settings are frozen ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)); the 2027 season, predicted live, is the real test. 2026 rounds 20–23 are being predicted live as a rehearsal (own scorecard, not the resume metric). Phase 5 (automation) is in progress: the tick (`scripts/tick.py`: plan, fetch what's ready, predict live after the same checks as a manual dry run, score, alert once per problem) is done, and it passes the Phase 5 gate: a simulated start of a season (two race weekends on a fake clock and fake APIs) runs with zero manual steps, including when a practice session and the starting grid never arrive. Since 2026-11-03 the pipeline runs on its own every hour on GitHub Actions (`.github/workflows/tick.yml`), starting with the 2026 rehearsal races; see Automation below. Phase 5 is done; next is Phase 6, the dashboard.
+**Status:** all six phases are built. The pipeline predicts every race on its own (hourly on GitHub Actions), logs each prediction before its cutoff in a log the database won't let anyone edit, scores it after the race, and publishes everything to a public dashboard. 2026 rounds 20–23 are predicted live as a rehearsal (their own scorecard); the 2027 season, predicted live with frozen settings, is the real test ([docs/evaluation-protocol.md](docs/evaluation-protocol.md)).
+
+**Dashboard:** [crystalge07.github.io/F1_Predictor](https://crystalge07.github.io/F1_Predictor/)
+
+| Page | What it shows |
+| --- | --- |
+| Next race | The latest live prediction: predicted order, win / podium / points / retirement chances, and how the win chances moved from stage to stage |
+| Why | The factors behind any driver's predicted position (SHAP), as a plain-English summary and a bar per factor |
+| Scorecard | Model against each stage's baseline, race by race, and calibration; live, rehearsal and backtest results never mixed |
+| Past races | Every logged prediction at each stage next to the real result |
+
+![The scorecard: model against baseline for the 2026 backtest](docs/images/dashboard-scorecard.png)
+
+<details>
+<summary>More screenshots (Why, Past races)</summary>
+
+![Why: the factors behind one driver's prediction](docs/images/dashboard-why.png)
+![Past races: each stage's prediction next to the result](docs/images/dashboard-past-race.png)
+
+</details>
+
+The dashboard (`web/`, React + TypeScript) reads only static JSON files that the hourly pipeline exports from the database (`scripts/export_dashboard.py`) and deploys to GitHub Pages when anything changed; it has no server and can't touch the prediction log. See [web/README.md](web/README.md).
 
 ## How it works
 
