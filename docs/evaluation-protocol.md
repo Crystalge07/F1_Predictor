@@ -58,7 +58,9 @@ Post-quali finishing order (average places off): 2026 rounds 10+ 2.95 vs grid
 3.25 (+9.2%); 2025 3.37 vs grid 3.34 (−0.9%).
 
 Settings at freeze: 2026 weight 8 (every value from 1 to 12 was within 0.08
-places on calibration, so effectively arbitrary), DNF prior strength 80 and
+places on calibration, so effectively arbitrary; it applies to every season
+from 2026 on, so during the 2027 test 2026 and 2027 rows both count x8 and
+2027 is not weighted above 2026: decision 2026-11-04 in docs/PRD.md), DNF prior strength 80 and
 driver weight 0.75, post-quali grid weight 0.9 with noise 2.0, pre-weekend and
 practice anchor weight 0.25 with noise 4.0.
 
