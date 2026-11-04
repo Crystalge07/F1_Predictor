@@ -49,3 +49,30 @@ export const CUTOFF_SESSION = {
   practice: "qualifying",
   post_quali: "the race",
 } as const;
+
+/** A factor's value in its own unit, for the Why page: "avg P2.4", "1.23%",
+ * "365 pts". null (no data: e.g. a debutant's history) -> "no data". */
+export function formatFactorValue(feature: string, value: number | null): string {
+  if (value === null) return "no data";
+  if (feature === "pit_lane_start") return value ? "yes" : "no";
+  if (feature === "grid") return `P${Math.round(value)}`;
+  if (feature.endsWith("_pct")) return `${value.toFixed(2)}%`;
+  if (feature.endsWith("_per_race")) return value.toFixed(1);
+  if (feature.endsWith("_points")) return `${Math.round(value)} pts`;
+  // The rest are average positions (form, team season, track record).
+  return `avg P${value.toFixed(1)}`;
+}
+
+/** "a factor's places": 1.97 -> "2.0 places", 1 -> "1.0 place". */
+export function formatPlaces(places: number): string {
+  const rounded = Math.abs(places).toFixed(1);
+  return `${rounded} ${rounded === "1.0" ? "place" : "places"}`;
+}
+
+/** A push in places, signed: "−3.1", "+0.4"; "0.0" when it rounds to nothing
+ * (so a tiny push never reads as a "−0.0" sign error). decimals: 1 or 2. */
+export function formatSignedPlaces(places: number, decimals = 1): string {
+  const text = Math.abs(places).toFixed(decimals);
+  if (Number(text) === 0) return (0).toFixed(decimals);
+  return `${places < 0 ? "−" : "+"}${text}`;
+}

@@ -134,6 +134,17 @@ def test_names_and_teams_come_with_the_file_and_a_debutant_is_identified(exporte
     assert "n50" in race["drivers"]
 
 
+def test_every_factor_has_its_plain_english_name(exported):
+    # The Why page shows these names; they come from the one Python list
+    # (explain/contributions.FEATURE_LABELS), not a copy in the app.
+    from f1predictor.explain.contributions import FEATURE_LABELS
+    race = exported("races/2027-01.json")
+    used = {f["feature"] for run in race["runs"] for d in run["drivers"] for f in d["factors"]}
+    assert set(race["feature_labels"]) == used
+    assert race["feature_labels"] == {f: FEATURE_LABELS[f] for f in used}
+    assert race["feature_labels"]["grid"] == "starting position"
+
+
 def test_the_index_lists_the_calendar_and_the_next_race(world, exported, tmp_path):
     index = exported("index.json")
     [season] = index["seasons"]

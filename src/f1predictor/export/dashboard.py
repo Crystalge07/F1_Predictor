@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from f1predictor.evaluate.scorer import HIGHER_IS_BETTER, scorecard_label, scorecards, summary
+from f1predictor.explain.contributions import FEATURE_LABELS
 from f1predictor.features.provisional import is_provisional, resolve
 from f1predictor.pipeline.plan import parse_utc, to_utc_text
 
@@ -157,8 +158,14 @@ def build_race(conn: sqlite3.Connection, event_id: int) -> dict:
     teams = {t: conn.execute("SELECT name FROM constructors WHERE constructor_id = ?", (t,)).fetchone()[0]
              for t in team_ids}
 
+    # Plain-English names of the factors in this file (explain/contributions.py),
+    # so the dashboard never keeps a second copy that could drift.
+    features = sorted({f["feature"] for run in runs for d in run["drivers"] for f in d["factors"]})
+    feature_labels = {f: FEATURE_LABELS.get(f, f.replace("_", " ")) for f in features}
+
     return {
         "schema": SCHEMA, "season": event["season"], "round": event["round"], "name": event["name"],
+        "feature_labels": feature_labels,
         "race_date": event["race_date"], "circuit": event["circuit"], "locality": event["locality"],
         "country": event["country"], "sessions": sessions,
         "status": "finished" if result else ("predicted" if runs else "upcoming"),

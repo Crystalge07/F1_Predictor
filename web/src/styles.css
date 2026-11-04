@@ -26,6 +26,9 @@
   --bar-track: #ecebe6;
   --grid: #e8e7e1;
   --axis: #8a8880;
+  /* The diverging pair (Why page): moved forward / moved back. */
+  --forward: #2a78d6;
+  --back: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -48,6 +51,8 @@
     --bar-track: #262b35;
     --grid: #252a33;
     --axis: #8b919c;
+    --forward: #3987e5;
+    --back: #e66767;
   }
 }
 
@@ -292,4 +297,62 @@ h2 { font-size: 18px; margin: 28px 0 8px; }
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* --- Why ----------------------------------------------------------------- */
+.pickers { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 16px 0 0; }
+.pickers label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.pickers select {
+  min-width: 220px;
+  max-width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+}
+.summary { margin-top: 0; }
+.caveat { margin: 16px 0 0; }
+
+.factor-scale {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin: 0 0 4px var(--factor-text-width);
+  padding-right: 3.5em;
+  font-size: 12px;
+  color: var(--axis);
+}
+.factor-scale span:first-child { text-align: right; padding-right: 8px; }
+.factor-scale span:last-child { padding-left: 8px; }
+.factor-chart { --factor-text-width: 38%; }
+.factors { margin: 0; padding: 0; list-style: none; }
+.factor {
+  display: grid;
+  grid-template-columns: var(--factor-text-width) minmax(0, 1fr) 3.5em;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.factor:last-child { border-bottom: 0; }
+.factor-text { display: flex; flex-direction: column; min-width: 0; }
+.factor-name { font-size: 14px; }
+.factor-value { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.factor-bar { display: grid; grid-template-columns: 1fr 1fr; height: 16px; }
+.factor-bar .half { display: flex; align-items: stretch; }
+.factor-bar .left { justify-content: flex-end; border-right: 1px solid var(--axis); }
+.factor-bar .bar { display: block; height: 100%; }
+/* 4px rounded at the data end, square at the centre line. */
+.factor-bar .forward { background: var(--forward); border-radius: 4px 0 0 4px; }
+.factor-bar .back { background: var(--back); border-radius: 0 4px 4px 0; }
+.factor-effect { text-align: right; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Phones: the factor name goes above its bar. */
+@media (max-width: 560px) {
+  .factor-chart { --factor-text-width: 0px; }
+  .factor { grid-template-columns: minmax(0, 1fr) 3.5em; }
+  .factor-text { grid-column: 1 / -1; }
+  .factor-scale { margin-left: 0; }
 }

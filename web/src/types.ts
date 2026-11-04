@@ -114,6 +114,7 @@ export interface Race {
   result: ResultRow[] | null;
   drivers: Record<string, DriverInfo>;
   teams: Record<string, string>;
+  feature_labels: Record<string, string>; // "driver_form_finish" -> "recent finishes (last 5)"
 }
 
 // --- data/scorecard.json --------------------------------------------------------
