@@ -98,10 +98,11 @@ def test_tiny_change_tiny_effect(stage, feature, nudge):
     assert move <= MAX_MOVE, f"nudging {driver}'s {feature} by {nudge} moved a chance by {move:.3f}"
 
 
-# The worst races in the 2026-11-04 survey, before -> after the smoothing
-# fixes (points): 2024 R6 14.0 -> 2.2, 2024 R10 2.6 -> 2.8, 2026 R8 5.3 -> 1.9,
-# 2026 R10 7.3 -> 3.6, 2026 R12 5.6 -> 5.8, 2026 R19 1.9 -> 2.0. (Updated
-# with the final numbers below.)
+# The worst races in the 2026-11-04 survey of all 71 calibration and held-out
+# races, worst move before -> after the smoothing fixes (points):
+# 2024 R6 13.9 -> 0.6, 2024 R10 2.6 -> 0.7, 2026 R8 5.3 -> 0.6,
+# 2026 R10 7.3 -> 0.4, 2026 R12 2.6 -> 1.3, 2026 R19 1.9 -> 0.6.
+# (docs/evaluation-protocol.md, "Stability fixes and races stopped early".)
 @pytest.mark.parametrize("season, rnd", [(2026, 19), (2024, 6), (2024, 10), (2026, 8), (2026, 10), (2026, 12)])
 def test_practice_tiny_pace_change_tiny_effect(season, rnd):
     move, driver = worst_move("practice", "short_run_gap_pct", 0.01, season, rnd)
