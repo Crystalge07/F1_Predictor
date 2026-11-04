@@ -120,3 +120,41 @@ code is a clean commit. A bad input can't be logged permanently by accident.
 | `model/wet-race-noise` | wider noise when it rains | worse even with a perfect forecast |
 | `model/fuel-corrected-long-runs` | fuel-correct practice long runs | no measurable effect |
 | `model/drop-overlapping-features` | drop running points totals | tie; cleaner SHAP explanations |
+
+## Bug fixes on 2026-11-04 (branch `fix/model-probe-bugs`)
+
+Edge-case, monotonicity and stability tests (`tests/test_grid_slots.py`,
+`test_practice_pace_edges.py`, `test_monotonicity.py`, `test_stability.py`)
+found seven bugs. These are corrections, not tuning: `tuned_settings.json`
+did not change and stays frozen. The fixes change the model's inputs and the
+model itself, so the numbers above are superseded by the table below.
+
+| Bug | Fix |
+| --- | --- |
+| OpenF1's grid sometimes leaves out pit-lane starters, who then vanished from the post-quali prediction | qualifiers whose car isn't on the grid are added as pit-lane starters (`features/as_of.add_missing_starters`) |
+| pit-lane flag was 1 in training (official result) but 0 live (OpenF1 lists most pit-lane starters in slot 20) | no longer a model input; `grid` puts them at the back in both |
+| one glitched lap (2026 Miami, 60.4 s) put a whole field ~52% off the pace | laps 7% faster than every other car and the driver's own next-best are dropped (1 of 100,074 laps) |
+| a red-flag "lap" (2023 Belgium, 1,631 s) gave a 1,224% short-run gap | a best lap outside 107% of the weekend's typical best gives no value |
+| a stint of mostly cool-down laps counted as a long run (52.7%) | clean laps within 107% of the stint's fastest lap, not 105% of its median |
+| the practice model could predict a better finish for slower practice pace | XGBoost monotone constraints on grid, qualifying gap and both practice gaps |
+| 0.01% of practice pace could move a chance by 16 points | same fix: now 1.9 points at most |
+
+Choices made on the calibration races only: which features get monotone
+constraints (grid and pace only; constraining the form and points features
+too was worse in total), and keeping the pit-lane flag out (slightly better).
+The long-run threshold (107%) was chosen on data quality alone (real long
+runs kept, absurd ones removed), without prediction scores.
+
+Held-out, before → after (improvement over each stage's baseline, positive =
+better; frozen settings, walk-forward, 34 races). One look, after all choices
+were made:
+
+| Stage | Win Brier | Podium Brier | Places off |
+| --- | --- | --- | --- |
+| Pre-weekend | +7.7% → +7.7% | +2.7% → +2.7% | +6.4% → +6.4% |
+| Practice | +5.7% → +9.2% | +16.1% → +17.9% | +2.9% → +4.3% |
+| Post-quali | −1.6% → −1.4% | +2.6% → +2.8% | +2.0% → +1.6% |
+
+Pre-weekend is unchanged (it uses none of the changed inputs). The Phase 4
+replay runs in the prediction log were made by the old code (their
+`model_version` says so) and were not re-run.
