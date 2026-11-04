@@ -86,15 +86,19 @@ def load_pre_quali_laps(conn: sqlite3.Connection) -> pd.DataFrame:
         FROM laps l
         JOIN sessions s          ON s.session_id = l.session_id
         JOIN session_entries se  ON se.session_id = l.session_id AND se.car_number = l.car_number
-        -- The same weekend's qualifying and race.
-        JOIN sessions q          ON q.event_id = s.event_id AND q.session_type = 'Q'
+        -- The same weekend's qualifying and race. LEFT JOIN for qualifying: a
+        -- weekend whose qualifying was cancelled (taken off the calendar)
+        -- still has practice; its laps then count up to the race start
+        -- (features/as_of.stage_cutoff).
+        LEFT JOIN sessions q     ON q.event_id = s.event_id AND q.session_type = 'Q'
         JOIN sessions race       ON race.event_id = s.event_id AND race.session_type = 'R'
         -- Which stint the lap is in: the stint whose lap range contains it.
         -- LEFT JOIN: keep laps with no stint data (they just can't be long-run laps).
         LEFT JOIN stints st      ON st.session_id = l.session_id AND st.car_number = l.car_number
                                 AND l.lap_number BETWEEN st.lap_start AND st.lap_end
         WHERE s.session_type IN ('FP1', 'FP2', 'FP3', 'S')
-          AND s.start_time_utc < q.start_time_utc   -- only what's known before qualifying
+          -- only what's known before qualifying (no qualifying: before the race)
+          AND s.start_time_utc < COALESCE(q.start_time_utc, race.start_time_utc)
           AND l.lap_time_ms IS NOT NULL
     """
     laps = pd.read_sql_query(query, conn)

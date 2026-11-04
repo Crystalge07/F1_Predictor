@@ -143,7 +143,9 @@ These are what make the project technically hard; each needs explicit handling a
 - **Wet races, red flags, safety cars:** wider uncertainty in the simulation; weather as a feature
 - **Grid penalties:** use the official starting grid, not raw qualifying order
 - **Late or broken data:** retry with backoff, validate row counts, alert and skip instead of crashing
-- **Cancelled sessions:** predict with whatever stages exist
+- **Cancelled sessions:** predict with whatever stages exist. A cancelled practice session: the practice stage uses the others. A cancelled qualifying (taken off the calendar): the practice stage runs up to the race start instead, and the post-quali stage is reported as missed *because there was no qualifying* (`features/as_of.stage_cutoff`, `pipeline/plan.py`; `tests/test_data_problems.py`). A session still on the calendar but never published is retried, given up after 24h and alerted.
+- **Moved sessions:** every OpenF1 fetch re-reads the season's session list and updates start times, and every Jolpica fetch refreshes the schedule, so a session moved during a weekend changes its stage's cutoff from the next fetch on. A session moved *later* is harmless anyway (the stored cutoff is earlier than the real one). Not covered: a change announced before FP1, when nothing is fetched yet (accepted: rare, and the pre-weekend stage only uses the previous race).
+- **Results changed after the race (late penalties, disqualifications):** re-fetched 24h and 72h after each race; a changed result is re-scored and alerted (`pipeline/plan.RESULT_RECHECKS`).
 - **Regulation resets (like 2026):** weight recent races more heavily than older seasons
 
 ## Build phases

@@ -45,6 +45,7 @@ When is each stage due? (all times UTC, from the calendar)
     practice     every session before qualifying has been fetched, OR it's
                  within LAST_CALL (2h) of qualifying (predict with whatever practice
                  data exists: a cancelled or broken session mustn't block it).
+                 No qualifying on the calendar at all: the same, up to the race.
     post_quali   qualifying results are in, AND either OpenF1's starting grid
                  is in or it's within LAST_CALL of the race (then the predictor
                  falls back to qualifying order, see features/as_of.py).
@@ -305,11 +306,16 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             ready = (now >= first_start - PRE_SEASON_WINDOW) if previous is None else previous
             stages.append(("pre_weekend", first_start, ready,
                            "previous race result is in" if previous else "season opener is near"))
-        if "Q" in starts:
+        # The practice stage's cutoff is qualifying, or the race if qualifying
+        # was cancelled and taken off the calendar (features/as_of.stage_cutoff;
+        # before 2026-11-03 such a weekend got no practice prediction at all).
+        practice_cutoff = starts.get("Q") or starts.get("R")
+        if practice_cutoff is not None:
             fetched = all(_openf1_done(conn, season, rnd, t) for t in pre_quali)
-            last_call = now >= starts["Q"] - LAST_CALL
-            stages.append(("practice", starts["Q"], fetched or last_call,
-                           "practice sessions fetched" if fetched else "last call before qualifying"))
+            last_call = now >= practice_cutoff - LAST_CALL
+            stages.append(("practice", practice_cutoff, fetched or last_call,
+                           "practice sessions fetched" if fetched else
+                           "last call before qualifying" if "Q" in starts else "last call before the race"))
         if "R" in starts:
             quali_in = _has_rows(conn, "qualifying", event_id, "Q")
             grid_in = _openf1_done(conn, season, rnd, "grid")
@@ -324,7 +330,11 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
                 # before the first live run ever (the backtested past) never
                 # had a live prediction to make.
                 if live_since is not None and cutoff > live_since:
-                    act("missed", stage, f"cutoff {to_utc_text(cutoff)} passed with no live run")
+                    # Say why when it's not the pipeline's fault: a post-quali
+                    # stage can't happen without a qualifying session.
+                    cause = ("; no qualifying on the calendar (cancelled?), so no post-quali prediction"
+                             if stage == "post_quali" and "Q" not in starts else "")
+                    act("missed", stage, f"cutoff {to_utc_text(cutoff)} passed with no live run{cause}")
             elif ready:
                 act("predict", stage, why)
 
