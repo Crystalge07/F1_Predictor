@@ -28,8 +28,8 @@ describe("the shell", () => {
     // pre-weekend prediction already logged.
     expect(await screen.findByRole("heading", { level: 1, name: "Test GP 3" })).toBeInTheDocument();
     expect(screen.getByText("2027 · Round 3")).toBeInTheDocument();
-    expect(screen.getByText("Race start: Sun 21 Mar, 15:00 UTC")).toBeInTheDocument();
-    expect(screen.getByRole("listitem")).toHaveTextContent("Pre-weekend");
+    expect(screen.getByRole("list", { name: "Sessions (UTC)" })).toHaveTextContent("Race Sun 21 Mar, 15:00 UTC");
+    expect(screen.getByRole("tab", { name: "Pre-weekend" })).toHaveAttribute("aria-selected", "true");
     // The export time of the test data (scripts/export_test_data.py: the end of the simulation).
     expect(screen.getByText("Data updated Tue 16 Mar, 12:00 UTC")).toBeInTheDocument();
   });

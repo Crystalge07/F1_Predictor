@@ -14,6 +14,18 @@
   --error-text: #8a1c14;
   --radius: 10px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* Charts. Eight categorical colours in a fixed order (validated for
+     colour-blind separation on this surface, both modes: scratch check with
+     the dataviz validator, 2026-11-04). Lines get them in that order; never
+     a ninth hue: past eight, drivers are drawn in --other. */
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
+  --other: #c9c8c1;          /* drivers outside the coloured eight */
+  --bar: #2a78d6;            /* the one hue for magnitude bars */
+  --bar-track: #ecebe6;
+  --grid: #e8e7e1;
+  --axis: #8a8880;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -28,6 +40,14 @@
     --accent-soft: #3a1b19;
     --error-bg: #3a1b19;
     --error-text: #ffb4ad;
+
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    --other: #3d424d;
+    --bar: #3987e5;
+    --bar-track: #262b35;
+    --grid: #252a33;
+    --axis: #8b919c;
   }
 }
 
@@ -138,4 +158,138 @@ h2 { font-size: 18px; margin: 28px 0 8px; }
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 13px;
+}
+
+/* --- Next race ---------------------------------------------------------- */
+.race-meta { margin: 0 0 4px; }
+.sessions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+  color: var(--muted);
+}
+.sessions strong { color: var(--text); font-weight: 600; }
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 24px 0 8px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;      /* not a pill: it may wrap onto two lines on a phone */
+  background: var(--surface);
+  width: fit-content;
+  max-width: 100%;
+}
+.tab {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.tab:focus-visible, .chart:focus-visible, .link-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.card {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.card h2 { margin-top: 0; }
+
+/* The prediction table */
+.table-wrap { width: 100%; }
+.predictions {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.predictions th {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+.predictions td { padding: 7px 6px; border-bottom: 1px solid var(--border); text-align: right; vertical-align: middle; }
+.predictions tr:last-child td { border-bottom: 0; }
+.predictions .left { text-align: left; }
+.predictions .rank { width: 2.5em; color: var(--muted); }
+.driver-name { font-weight: 600; }
+.team { display: block; color: var(--muted); font-size: 12px; }
+.tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+.pct { min-width: 4.2em; }
+.pct-bar { display: block; height: 4px; margin-top: 3px; border-radius: 2px; background: var(--bar-track); overflow: hidden; }
+.pct-bar span { display: block; height: 100%; border-radius: 0 2px 2px 0; background: var(--bar); }
+
+/* The odds chart */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+.chart-legend li { display: flex; align-items: center; gap: 6px; }
+.swatch { width: 12px; height: 3px; border-radius: 2px; }
+.chart { display: block; width: 100%; overflow: visible; touch-action: pan-y; }
+.chart text { font-family: var(--font); }
+.chart-tooltip {
+  margin-top: 8px;
+  min-height: 1.5em;
+  font-size: 13px;
+  color: var(--muted);
+}
+.chart-tooltip strong { color: var(--text); }
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.chart-controls { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; }
+
+/* Phones: the less important columns tuck away, so nothing scrolls sideways. */
+@media (max-width: 560px) {
+  .optional { display: none; }
+  .predictions th, .predictions td { padding-left: 4px; padding-right: 4px; }
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
