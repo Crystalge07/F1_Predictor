@@ -34,8 +34,10 @@ Measured on 2023-2026 (2026-11-03):
       the misses are late penalty reshuffles at the back, usually 1 place.
 
 Known simplifications:
-    * Pit-lane starts aren't known from the starting grid (OpenF1 lists them
-      in a normal slot at the back), so pit_lane_start is 0 for upcoming rows.
+    * Pit-lane starts aren't known from the starting grid (OpenF1 lists most
+      in a normal slot at the back), so pit_lane_start is usually 0 for
+      upcoming rows. That's why it isn't a model input (race_features.py).
+      Starters OpenF1 leaves out entirely are known: add_missing_starters.
     * session_entries matches car numbers to drivers using the same weekend's
       result when it exists (ingest/openf1.match_entries). That only tells us
       WHO drove car #16, not how they did, and live the acronym rule covers it.

@@ -20,18 +20,18 @@ from the post-quali prediction (was BUG 1); now features/as_of.
 add_missing_starters adds every qualifier whose car isn't on the grid as a
 pit-lane starter.
 
-KNOWN BUG (xfail, strict: it will start failing once fixed, as a reminder
-to drop the marker), found in the real data:
-    2. When OpenF1 does list a pit-lane starter, it gives a normal slot (20),
-       not 0, so live rows have pit_lane_start = 0 while training rows for the
-       same kind of start have 1 (train/serve mismatch).
+FIXED: when OpenF1 does list a pit-lane starter, it gives a normal slot
+(20), not 0, so live rows had pit_lane_start = 0 while training rows for the
+same kind of start had 1 (a train/serve mismatch, was BUG 2). The flag is no
+longer a model input (features/race_features.py); grid carries the
+information in both.
 """
 
 import pandas as pd
 import pytest
 
 from f1predictor.features.as_of import prediction_rows
-from f1predictor.features.race_features import build_race_features
+from f1predictor.features.race_features import POST_QUALI_FEATURES, build_race_features
 from f1predictor.simulate.probabilities import race_probabilities
 
 from test_as_of import CARS, conn, weekend  # noqa: F401  (fixtures)
@@ -117,26 +117,23 @@ def test_an_unmatched_car_on_the_grid_is_not_added_twice(conn, weekend):
     assert "d" not in set(rows["driver_id"])
 
 
-@pytest.mark.xfail(strict=True, reason="BUG 2: pit-lane flag is 1 in training but 0 live for the same start")
-def test_pit_lane_flag_matches_between_training_and_live(conn, weekend):
-    # 'a' starts race 2 from the pit lane. The official result says grid 0
-    # (-> training flag 1). OpenF1's starting grid lists the car in the last
-    # slot instead, which is what it did for real pit-lane starters (2023
-    # R15, R19; 2024 R20), so the live row gets flag 0.
+def test_pit_lane_start_is_the_same_input_in_training_and_live(conn, weekend):
+    # Was BUG 2. 'a' starts race 2 from the pit lane. The official result
+    # says grid 0 (-> training flag 1). OpenF1's starting grid lists the car
+    # in the last slot instead, as it did for real pit-lane starters (2023
+    # R15, R19; 2024 R20), so live the flag is 0. Fix: the flag is no longer
+    # a model input; `grid`, which IS an input, puts the car at the back in
+    # both.
     conn.execute("UPDATE results SET grid = 0 WHERE session_id = ? AND driver_id = 'a'", (weekend["R"],))
-    conn.execute("UPDATE starting_grid SET position = 3 WHERE session_id = ? AND car_number = ?",
-                 (weekend["Q"], CARS["b"]))     # free the old slots up the order...
-    conn.execute("UPDATE starting_grid SET position = 1 WHERE session_id = ? AND car_number = ?",
-                 (weekend["Q"], CARS["c"]))
-    conn.execute("UPDATE starting_grid SET position = 2 WHERE session_id = ? AND car_number = ?",
-                 (weekend["Q"], CARS["d"]))
-    conn.execute("UPDATE starting_grid SET position = 4 WHERE session_id = ? AND car_number = ?",
-                 (weekend["Q"], CARS["a"]))     # ...and put 'a' last, as OpenF1 does
+    for driver, slot in {"c": 1, "d": 2, "b": 3, "a": 4}.items():   # 'a' last, as OpenF1 does
+        conn.execute("UPDATE starting_grid SET position = ? WHERE session_id = ? AND car_number = ?",
+                     (slot, weekend["Q"], CARS[driver]))
 
+    assert "pit_lane_start" not in POST_QUALI_FEATURES
     trained_on = build_race_features(conn)
-    training_flag = trained_on[(trained_on["session_id"] == weekend["R"])
-                               & (trained_on["driver_id"] == "a")]["pit_lane_start"].iloc[0]
-    live, _ = prediction_rows(conn, weekend["event"], "post_quali")
-    live_flag = live.set_index("driver_id").loc["a", "pit_lane_start"]
-    assert training_flag == 1
-    assert live_flag == training_flag
+    training = trained_on[(trained_on["session_id"] == weekend["R"])].set_index("driver_id").loc["a"]
+    live = prediction_rows(conn, weekend["event"], "post_quali")[0].set_index("driver_id").loc["a"]
+    # The flag still differs (kept in the table for information)...
+    assert (training["pit_lane_start"], live["pit_lane_start"]) == (1, 0)
+    # ...but every model input agrees: the back of the field.
+    assert training["grid"] == live["grid"] == 4

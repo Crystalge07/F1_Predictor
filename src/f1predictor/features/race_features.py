@@ -28,7 +28,6 @@ Features (all numeric; NaN = "unknown", which XGBoost handles natively, so we
 don't invent fake values for rookies or round 1):
 
     grid                     official starting slot (pit-lane starts moved to the back)
-    pit_lane_start           1 if they start from the pit lane, else 0
     quali_gap_pct            % slower than pole in qualifying (0 = on pole)
     driver_form_finish       avg finish over the driver's last 5 races (finishes only)
     driver_form_grid         avg starting slot over the driver's last 5 races
@@ -62,7 +61,6 @@ from f1predictor.features.teams import lineage
 # list, so adding a feature here is the only change needed to feed it in.
 POST_QUALI_FEATURES = [
     "grid",
-    "pit_lane_start",
     "quali_gap_pct",
     "driver_form_finish",
     "driver_form_grid",
@@ -71,6 +69,14 @@ POST_QUALI_FEATURES = [
     "driver_track_finish",
     "team_track_finish",
 ]
+# pit_lane_start (1 = starts from the pit lane) is computed and kept in the
+# table, but is NOT a model input (decision 2026-11-04): training reads it from
+# the official result (grid 0), but live predictions can't know it, because
+# OpenF1's starting grid lists most pit-lane starters in a normal slot at the
+# back. A feature that is 1 in training and 0 live for the same start teaches
+# the model something it can never use. `grid` already puts these drivers at
+# the back in both, which is what matters.
+#
 # Practice pace (PRACTICE_PACE_COLUMNS) is computed and kept in the table, but
 # deliberately left out of the post-quali model: on validation races it made
 # predictions slightly worse (the grid already captures most of what practice
@@ -269,7 +275,8 @@ def build_race_features(conn: sqlite3.Connection,
     # to_numeric turns None into NaN; real numbers are unchanged.
     for column in POST_QUALI_FEATURES + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS:
         df[column] = pd.to_numeric(df[column], errors="coerce").astype(float)
-    return (df[id_columns + POST_QUALI_FEATURES + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS
+    return (df[id_columns + POST_QUALI_FEATURES + ["pit_lane_start"]
+               + PRACTICE_PACE_COLUMNS + CHAMPIONSHIP_COLUMNS
                + ["finish_position", "actual_position"]]
             .sort_values(["race_date", "session_id", "grid"])
             .reset_index(drop=True))
