@@ -26,6 +26,7 @@ to the Phase 4 backtest (docs/evaluation-protocol.md). This is about the pipelin
 
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 
 from f1predictor.db.connection import get_connection, init_db
@@ -36,6 +37,7 @@ from f1predictor.pipeline.tick import run_tick
 from f1predictor.predict import stage
 
 from replay_f1 import ReplayF1
+from test_probability_invariants import invariant_problems
 
 START = datetime(2026, 10, 26, 0, 0, tzinfo=timezone.utc)    # Monday after Austin
 END = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)      # Tuesday after Mexico City
@@ -233,3 +235,20 @@ def test_post_quali_used_the_real_starting_grid_and_the_real_field(replay):
     lineup_missing = conn.execute("SELECT model_value FROM scores WHERE run_id = ? AND metric = 'lineup_missing'",
                                   (run["run_id"],)).fetchone()[0]
     assert lineup_missing == 0
+
+
+def test_logged_runs_obey_probability_invariants(replay):
+    # The probability rules from test_probability_invariants.py (win chances
+    # add up to 1, podium to 3, points to 10, ...), checked on the three runs
+    # the hourly tick actually wrote to the log: real laps, all 22 cars, and
+    # the debutant predicted under a temporary id. This is the only place the
+    # PRACTICE stage gets these checks (the small fake weekend has no laps).
+    conn, _ = replay
+    problems = {}
+    for (rnd, stage_name), run in runs(conn).items():
+        rows = pd.read_sql_query("SELECT * FROM predictions WHERE run_id = ?", conn,
+                                 params=(run["run_id"],))
+        assert len(rows) == 22, f"R{rnd} {stage_name}: {len(rows)} drivers logged"
+        if invariant_problems(rows):
+            problems[f"R{rnd} {stage_name}"] = invariant_problems(rows)
+    assert problems == {}
