@@ -22,6 +22,7 @@ from the model's raw numbers was WORSE than the grid-only baseline. Two reasons:
 Also home to the scoring used for probabilities (Brier score per outcome).
 """
 
+import numpy as np
 import pandas as pd
 
 from f1predictor import settings
@@ -51,6 +52,69 @@ STAGE_SETTINGS = {
 }
 
 
+# How gradually two drivers swap places in the model's order, in units of the
+# model's raw expected position. See model_order. Chosen 2026-11-04 on
+# stability alone: every value from 0 to 0.3 scored the same on the
+# calibration races (within 0.1% Brier), so it isn't a tuned setting and
+# tuned_settings.json stays frozen. docs/evaluation-protocol.md has the numbers.
+RANK_SMOOTHING = 0.2
+
+
+def model_order(expected: pd.Series, smoothing: float = RANK_SMOOTHING) -> np.ndarray:
+    """The model's ORDER on a 1..N scale, with near-ties blended smoothly.
+
+    A plain rank jumps: if two drivers' raw numbers are 6.20 and 6.21, the
+    tiniest change that swaps them moves each by a whole place, and with the
+    practice blend (model weight 0.75) that alone could move a win chance by
+    8 points (2026 Mexico, see tests/test_stability.py). So instead of
+    "how many drivers are ahead of me" (a count of 0s and 1s), each other
+    driver counts as ahead by a smooth amount between 0 and 1:
+
+        order_i = 1 + sum over j != i of  S((e_i - e_j) / smoothing)
+
+    where S is the logistic curve (0 when j is far behind, 0.5 when level,
+    1 when j is far ahead). Drivers more than ~0.5 apart (5 x smoothing) get
+    their plain rank to within 0.01 place; drivers level share the place
+    (two drivers tied for 2nd both get 2.5). The places still add up to
+    1 + 2 + ... + N. smoothing = 0 gives the old plain rank.
+    """
+    if smoothing <= 0:
+        return expected.rank(method="first").to_numpy()
+    values = expected.to_numpy(dtype=float)
+    gaps = (values[:, None] - values[None, :]) / smoothing
+    # Logistic written with tanh, which can't overflow for large gaps.
+    ahead = 0.5 * (1.0 + np.tanh(gaps / 2.0))
+    # The diagonal (a driver vs themself) is S(0) = 0.5; the 0.5 + ... keeps
+    # the leader at 1.
+    return 0.5 + ahead.sum(axis=1)
+
+
+# The practice stage's anchor is the practice order (fastest practice lap
+# first), which is also a plain rank: two laps 5 ms apart swap a whole place
+# on a 9 ms change (2026 R12 Norris/Russell moved a chance by 5.8 points).
+# So in the BLEND, drivers with a lap get their place in a smooth order of
+# their short-run gap (model_order again, with this width in % of lap time:
+# ~45 ms on a 90 s lap). Drivers with no lap keep their integer places behind
+# them. The integer practice_rank itself is unchanged (it's still the
+# baseline's slot, and what the log stores as anchor_position).
+PRACTICE_ORDER_SMOOTHING = 0.05
+
+
+def anchor_places(race: pd.DataFrame, anchor_column: str) -> pd.Series:
+    """The anchor's places for the blend: `anchor_column` as is, except the
+    practice order, whose lap-time near-ties are smoothed (see above)."""
+    places = race[anchor_column].astype(float)
+    if anchor_column != "practice_rank" or "short_run_gap_pct" not in race:
+        return places
+    has_lap = race["short_run_gap_pct"].notna()
+    if has_lap.any():
+        # practice_rank puts drivers with a lap at 1..k (k = how many), so
+        # their smooth order covers the same 1..k and the rest stay at k+1..N.
+        places = places.copy()
+        places[has_lap] = model_order(race.loc[has_lap, "short_run_gap_pct"], PRACTICE_ORDER_SMOOTHING)
+    return places
+
+
 def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT,
                     anchor_column: str = "grid") -> pd.DataFrame:
     """Replace expected_position with a grid/model blend, on a 1..N scale.
@@ -62,15 +126,16 @@ def blend_with_grid(race: pd.DataFrame, grid_weight: float = GRID_WEIGHT,
     grid_weight is then the weight of that anchor.
 
     The model's raw numbers are turned into its predicted ORDER first
-    (rank: lowest expected position -> 1), so both ingredients use the same
-    1..N scale before mixing. rank(method="first") breaks exact ties by row
-    order, so every driver gets a distinct place.
+    (lowest expected position -> 1, see model_order), so both ingredients use
+    the same 1..N scale before mixing. Near-ties share places smoothly, so a
+    tiny change in the model's numbers only makes a tiny change here.
 
     Example, grid_weight 0.75: a driver starting 4th whom the model ranks 2nd
     gets 0.75 * 4 + 0.25 * 2 = 3.5.
     """
-    model_order = race["expected_position"].rank(method="first")
-    return race.assign(expected_position=grid_weight * race[anchor_column] + (1 - grid_weight) * model_order)
+    order = model_order(race["expected_position"])
+    anchor = anchor_places(race, anchor_column)
+    return race.assign(expected_position=grid_weight * anchor + (1 - grid_weight) * order)
 
 
 def race_probabilities(race: pd.DataFrame, noise_sd: float = NOISE_SD,

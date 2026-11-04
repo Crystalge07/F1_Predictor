@@ -70,9 +70,11 @@ def test_blend_with_a_gap_and_a_shared_pit_lane_slot():
     # ...and between the two cars sharing slot 7, the model breaks the tie in
     # the blend: 0.9*7 + 0.1*5 = 6.8 vs 0.9*7 + 0.1*6 = 6.9. (Their simulated
     # chances are NOT compared: 0.1 places is smaller than the Monte Carlo's
-    # own sampling noise, so either could come out ahead.)
-    assert by_driver.loc["d4", "expected_position"] == pytest.approx(6.8)
-    assert by_driver.loc["d5", "expected_position"] == pytest.approx(6.9)
+    # own sampling noise, so either could come out ahead.) The model's order
+    # is smooth (simulate/probabilities.model_order), so the places are
+    # within a hair of 5 and 6, not exactly.
+    assert by_driver.loc["d4", "expected_position"] == pytest.approx(6.8, abs=1e-3)
+    assert by_driver.loc["d5", "expected_position"] == pytest.approx(6.9, abs=1e-3)
 
 
 def test_training_puts_pit_lane_starters_at_the_back_with_the_flag(conn, weekend):

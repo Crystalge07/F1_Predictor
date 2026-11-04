@@ -6,7 +6,7 @@ import pytest
 
 from f1predictor.explain.contributions import explain_race, top_reasons
 from f1predictor.features.race_features import POST_QUALI_FEATURES
-from f1predictor.models.position import train_model
+from f1predictor.models.position import predict_positions, train_model
 
 
 @pytest.fixture
@@ -30,7 +30,8 @@ def test_contributions_add_up_to_the_prediction(trained):
     per_driver = explanation.groupby("driver_id").agg(total=("contribution", "sum"),
                                                       baseline=("baseline", "first"),
                                                       predicted=("predicted", "first"))
-    model_says = pd.Series(model.predict(race[POST_QUALI_FEATURES]), index=race["driver_id"])
+    # The prediction the rest of the pipeline uses: averaged over nearby paces.
+    model_says = predict_positions(model, race).set_index("driver_id")["expected_position"]
     # baseline + sum of contributions = prediction (the defining SHAP property).
     assert np.allclose(per_driver["baseline"] + per_driver["total"], per_driver["predicted"], atol=1e-4)
     assert np.allclose(per_driver["predicted"], model_says.loc[per_driver.index], atol=1e-4)

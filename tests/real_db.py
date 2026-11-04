@@ -50,24 +50,26 @@ def connect_read_only() -> sqlite3.Connection:
     return conn
 
 
-def stage_setup(stage: str) -> tuple:
-    """(model, race rows) for 2026 R19 at `stage`, trained exactly as predict/stage.py
-    trains it: the stage's features, every race before this one, the frozen 2026 weight."""
+def stage_setup(stage: str, season: int = SEASON, rnd: int = ROUND) -> tuple:
+    """(model, race rows) for one race at `stage` (default 2026 R19), trained
+    exactly as predict/stage.py trains it: the stage's features, every race
+    before this one, the frozen 2026 weight."""
     if "conn" not in _CACHE:
         _CACHE["conn"] = connect_read_only()
         _CACHE["table"] = build_race_features(_CACHE["conn"])
-    if stage not in _CACHE:
+    key = (stage, season, rnd)
+    if key not in _CACHE:
         conn = _CACHE["conn"]
         row = conn.execute("SELECT event_id FROM events WHERE season = ? AND round = ?",
-                           (SEASON, ROUND)).fetchone()
+                           (season, rnd)).fetchone()
         if row is None:
-            pytest.skip(f"{SEASON} round {ROUND} not in the database")
+            pytest.skip(f"{season} round {rnd} not in the database")
         race, _ = prediction_rows(conn, row["event_id"], stage)
         table = _CACHE["table"]
         history = table[table["race_date"] < race["race_date"].iloc[0]]
         model = train_model(history, WEIGHT_2026, columns=STAGE_FEATURES[stage])
-        _CACHE[stage] = (model, race)
-    return _CACHE[stage]
+        _CACHE[key] = (model, race)
+    return _CACHE[key]
 
 
 def probabilities(model, race: pd.DataFrame, stage: str, n_sims: int = 2_000) -> pd.DataFrame:

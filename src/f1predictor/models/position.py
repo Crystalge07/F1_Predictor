@@ -22,6 +22,7 @@ can't be tuned without 2027 data; revisit after the season. Pinned by
 tests/test_position_model.py::test_2027_rows_weigh_the_same_as_2026_rows.
 """
 
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 
@@ -106,6 +107,44 @@ def train_model(train: pd.DataFrame, weight_2026: float = 1.0,
     return model
 
 
+# Pace smoothing: the trees are step functions, so 9 ms of practice pace can
+# cross a split and move a driver's prediction by a third of a place in one
+# jump (2026-11-04: 2024 Miami, Sainz +0.33, which moved a win chance by 11
+# points). So every prediction is the AVERAGE of the model at the driver's
+# pace and at nearby paces: each step becomes a short ramp, and a tiny change
+# makes a tiny difference.
+#   PACE_FEATURES   the lap-time gaps (in % of lap time) that get smoothed.
+#                   Not grid: it's a whole place, not a measurement.
+#   PACE_SMOOTHING  half-width of the band, in % of lap time (0.05% = ~45 ms
+#                   on a 90 s lap, about the size of timing/track noise)
+#   PACE_OFFSETS    9 evenly spaced points from -1 to +1 times the half-width
+# An average of monotone predictions is still monotone, so the direction
+# rules above still hold. NaN (no lap) stays NaN at every offset. Chosen on
+# stability alone (docs/evaluation-protocol.md, 2026-11-04); not a tuned
+# setting, so tuned_settings.json stays frozen.
+PACE_FEATURES = ("quali_gap_pct", "short_run_gap_pct", "long_run_gap_pct")
+PACE_SMOOTHING = 0.05
+PACE_OFFSETS = np.linspace(-1.0, 1.0, 9)
+
+
+def shifted_inputs(race: pd.DataFrame, columns: list[str],
+                   smoothing: float = PACE_SMOOTHING) -> list[pd.DataFrame]:
+    """The model's inputs for `race`, once per pace offset (just once if the
+    columns have no pace feature or smoothing is 0). The prediction is the
+    mean of the model over these; explain/contributions.py averages over the
+    same list, so its contributions still add up to the prediction."""
+    X = race[columns].astype(float)
+    pace = [c for c in columns if c in PACE_FEATURES]
+    if not pace or smoothing <= 0:
+        return [X]
+    shifted = []
+    for offset in PACE_OFFSETS:
+        Xo = X.copy()
+        Xo[pace] = Xo[pace] + offset * smoothing
+        shifted.append(Xo)
+    return shifted
+
+
 def predict_positions(model: xgb.XGBRegressor, race: pd.DataFrame) -> pd.DataFrame:
     """The model's expected finishing position for each driver in one race.
 
@@ -118,7 +157,9 @@ def predict_positions(model: xgb.XGBRegressor, race: pd.DataFrame) -> pd.DataFra
     """
     # feature_names_in_: the columns the model was trained on, in that order.
     columns = list(model.feature_names_in_)
-    return race.assign(expected_position=model.predict(race[columns]))
+    # Averaged over nearby paces (see PACE_SMOOTHING).
+    predictions = [model.predict(X) for X in shifted_inputs(race, columns)]
+    return race.assign(expected_position=np.mean(predictions, axis=0))
 
 
 def predict_order(model: xgb.XGBRegressor, race: pd.DataFrame) -> list[str]:
