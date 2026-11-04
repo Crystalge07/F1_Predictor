@@ -74,3 +74,50 @@ def test_a_damaged_file_blocks_the_upload(db, tmp_path):
     new.write_bytes(db.read_bytes()[:4096])          # truncated mid-file
     problems = upload_problems(db, new)
     assert problems and ("damaged" in problems[0] or "can't be read" in problems[0])
+
+
+def test_a_new_column_does_not_block_the_upload(db, tmp_path):
+    """A schema change that adds a column (filled in for old rows with NULL or
+    a default) must not make every live run look changed."""
+    new = copy(db, tmp_path)
+    conn = sqlite3.connect(new)
+    conn.execute("ALTER TABLE predictions ADD COLUMN model_rank INTEGER")
+    conn.execute("ALTER TABLE prediction_runs ADD COLUMN note TEXT DEFAULT 'x'")
+    conn.commit()
+    conn.close()
+    assert upload_problems(db, new) == []
+
+
+def test_a_changed_live_value_still_blocks_after_a_new_column(db, tmp_path):
+    new = copy(db, tmp_path)
+    conn = sqlite3.connect(new)
+    conn.execute("ALTER TABLE predictions ADD COLUMN model_rank INTEGER")
+    conn.execute("DROP TRIGGER predictions_no_update")
+    conn.execute("UPDATE predictions SET p_win = 0.9 WHERE run_id = 1")
+    conn.commit()
+    conn.close()
+    assert any("changed" in p for p in upload_problems(db, new))
+
+
+def test_a_dropped_column_blocks_the_upload(db, tmp_path):
+    new = copy(db, tmp_path)
+    conn = sqlite3.connect(new)
+    conn.execute("ALTER TABLE predictions DROP COLUMN p_points")
+    conn.commit()
+    conn.close()
+    assert any("columns missing" in p and "p_points" in p for p in upload_problems(db, new))
+
+
+def test_fingerprints_match_the_old_select_star_version(db):
+    """Naming the columns gives the same fingerprint SELECT * did, so the
+    first upload after this change compares like with like."""
+    import hashlib
+    from f1predictor.db.guard import live_fingerprints
+    conn = sqlite3.connect(db)
+    digest = hashlib.sha256()
+    for query in ("SELECT * FROM prediction_runs WHERE run_id = ?",
+                  "SELECT * FROM predictions WHERE run_id = ? ORDER BY driver_id",
+                  "SELECT * FROM prediction_features WHERE run_id = ? ORDER BY driver_id, feature"):
+        for row in conn.execute(query, (1,)):
+            digest.update(repr(tuple(row)).encode("utf-8"))
+    assert live_fingerprints(conn) == {1: digest.hexdigest()}
