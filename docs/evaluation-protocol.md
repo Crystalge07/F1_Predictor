@@ -210,3 +210,31 @@ commit and settings. Now:
 
 Upgrading a library is a deliberate change, made between seasons with the
 same care as a settings change.
+
+### Held-out numbers through the as-of path
+
+The held-out tables above come from the evaluation scripts, which build the
+test race's rows from its RESULT (who actually started, the official grid
+after penalties). A live prediction can't know those: it uses the as-of
+rows (`features/as_of.py`: last race's lineup, practice entries, OpenF1's
+starting grid). Only the 2026 replay used the as-of path, so the held-out
+numbers were slightly optimistic in a way nobody had measured.
+
+Measured 2026-11-03: the same 34 held-out races (2025 + 2026 rounds 10+),
+every stage predicted strictly as of its cutoff with `predict_stage`
+(`scripts/replay_season.py --db <copy> --season 2025`, then `--season 2026
+--rounds 10 99`), scored by the scorer against an as-of baseline (the run's
+own anchor order and slot rates). Frozen settings, code after the fixes
+above. One look; nothing was chosen from it.
+
+| Stage | Win Brier (result-based → as-of) | Podium Brier | Places off (as-of) |
+| --- | --- | --- | --- |
+| Pre-weekend | +7.7% → +7.8% | +2.7% → +2.1% | +4.6% |
+| Practice | +9.2% → +9.1% | +17.9% → +17.8% | +6.3% |
+| Post-quali | −1.4% → −1.3% | +2.8% → +2.9% | +0.3% |
+
+The probabilities hold up: no stage moves by more than 0.6 points, so
+feeding the model result-based rows was not inflating the held-out Brier
+numbers. Places off isn't comparable with the earlier column: it is now
+scored on the simulator's order (the change above) against the as-of
+baseline, so after qualifying it is close to the as-of grid by design.
