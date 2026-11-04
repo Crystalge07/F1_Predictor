@@ -47,9 +47,11 @@ SCHEMA_PATH: Path = Path(__file__).resolve().parent / "db" / "schema.sql"
 # has results back to 1950, but older seasons add little to today's model.)
 FIRST_SEASON: int = 2018
 
-# The latest season to backfill. Written explicitly rather than computed from
-# today's date, so a run in January doesn't silently start fetching an empty
-# new season. Bump this at the start of each new season.
+# The latest season scripts/backfill.py loads by default (it also takes
+# --seasons). Written explicitly rather than computed from today's date, so a
+# run in January doesn't silently start fetching an empty new season. Bump
+# it at the start of each season. The LIVE pipeline doesn't use it: the
+# planner fetches the current UTC year's calendar itself (pipeline/plan.py).
 LAST_SEASON: int = 2026
 
 # A convenience list: [2018, 2019, ..., 2026]. range() excludes its end value,

@@ -24,6 +24,17 @@ TEAM_LINEAGE = {
 }
 
 
+# Teams that are genuinely NEW (no predecessor), confirmed by a person. With
+# TEAM_LINEAGE this classifies every team id: when Jolpica shows a team id
+# for the first time, it must be one or the other, or the validation check
+# validate/checks.check_team_ids warns (architecture review, 2026-11-03).
+# Without that, a rebrand nobody added to TEAM_LINEAGE would silently start
+# the team's track and DNF history from zero.
+NEW_TEAMS = {
+    "cadillac",                  # 2026: a new entry, no predecessor
+}
+
+
 def lineage(constructor_id: str) -> str:
     """The team's current id: lineage('toro_rosso') -> 'rb', lineage('ferrari') -> 'ferrari'."""
     return TEAM_LINEAGE.get(constructor_id, constructor_id)

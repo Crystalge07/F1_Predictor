@@ -214,6 +214,36 @@ def check_qualifying(conn: sqlite3.Connection, session_id: int) -> list[Issue]:
     return issues
 
 
+def check_team_ids(conn: sqlite3.Connection, season: int) -> list[Issue]:
+    """Warn about team ids racing for the first time this season that nobody has classified.
+
+    Jolpica gives a rebranded team a new id. features/teams.py links old ids
+    to new ones (TEAM_LINEAGE) and lists genuinely new teams (NEW_TEAMS); an
+    id that is in neither, and has no earlier id of the same lineage, is
+    either a rebrand someone has to add or a new team someone has to confirm.
+    Until then its cross-season history (track record, DNF rate) starts from
+    zero. A warning: the data is fine, the mapping needs a person.
+    """
+    from f1predictor.features.teams import NEW_TEAMS, lineage
+
+    def teams(where: str) -> set[str]:
+        return {row[0] for row in conn.execute(
+            "SELECT DISTINCT r.constructor_id FROM results r JOIN sessions s USING (session_id) "
+            f"JOIN events e USING (event_id) WHERE s.session_type = 'R' AND {where}", (season,))}
+
+    earlier = teams("e.season < ?")
+    if not earlier:
+        return []   # the first season in the database: everything is "new"
+    known_lineages = {lineage(team) for team in earlier}
+    unclassified = sorted(team for team in teams("e.season = ?") - earlier
+                          if lineage(team) not in known_lineages and team not in NEW_TEAMS)
+    if not unclassified:
+        return []
+    return [Issue("unclassified_team_id", "warning",
+                  f"team id(s) {unclassified} race in {season} for the first time: if a rebrand, map the "
+                  "old id in features/teams.TEAM_LINEAGE; if a new team, add it to NEW_TEAMS")]
+
+
 def check_jolpica_part(conn: sqlite3.Connection, season: int, part: str) -> list[Issue]:
     """Run the right checks for one Jolpica ingest part ('schedule', 'results', ...)."""
     if part == "schedule":
@@ -238,6 +268,8 @@ def check_jolpica_part(conn: sqlite3.Connection, season: int, part: str) -> list
     issues: list[Issue] = []
     for session_id in session_ids:
         issues.extend(check(conn, session_id))
+    if part == "results":
+        issues.extend(check_team_ids(conn, season))
     return issues
 
 
