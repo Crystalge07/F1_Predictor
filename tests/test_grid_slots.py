@@ -14,12 +14,14 @@ Passing tests: the blend copes with gaps and shared slots (probabilities still
 add up, order follows the blend), and training puts pit-lane starters at the
 back with the flag set.
 
-KNOWN BUGS (xfail, strict: they will start failing once fixed, as a reminder
-to drop the marker). Found in the real data:
-    1. OpenF1's grid sometimes LEAVES OUT pit-lane starters (2023 R3: Perez,
-       Bottas; 2023 R13: Magnussen; 2 of 88 stored grids). grid_lineup only
-       falls back to qualifying when the grid is completely empty, so those
-       drivers vanish from the post-quali prediction.
+FIXED: OpenF1's grid sometimes LEAVES OUT pit-lane starters (2023 R3:
+Perez, Bottas; 2023 R13: Magnussen; 2 of 88 stored grids). They used to vanish
+from the post-quali prediction (was BUG 1); now features/as_of.
+add_missing_starters adds every qualifier whose car isn't on the grid as a
+pit-lane starter.
+
+KNOWN BUG (xfail, strict: it will start failing once fixed, as a reminder
+to drop the marker), found in the real data:
     2. When OpenF1 does list a pit-lane starter, it gives a normal slot (20),
        not 0, so live rows have pit_lane_start = 0 while training rows for the
        same kind of start have 1 (train/serve mismatch).
@@ -84,16 +86,35 @@ def test_training_puts_pit_lane_starters_at_the_back_with_the_flag(conn, weekend
     assert race["pit_lane_start"].to_dict() == {"a": 1, "b": 0, "c": 0, "e": 1}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG 1: a partly published starting grid drops the missing drivers")
 def test_partial_starting_grid_keeps_every_driver(conn, weekend):
-    # OpenF1 publishes the grid but leaves out d (as it did with real
-    # pit-lane starters in 2023). d qualified and is in the entry lists, so
-    # the post-quali prediction must still include them, at the back.
+    # Was BUG 1. OpenF1 publishes the grid but leaves out d (as it did with
+    # real pit-lane starters in 2023). d qualified, so the post-quali
+    # prediction must still include them: as a pit-lane starter, at the back.
     conn.execute("DELETE FROM starting_grid WHERE session_id = ? AND car_number = ?",
                  (weekend["Q"], CARS["d"]))
     rows, meta = prediction_rows(conn, weekend["event"], "post_quali")
     assert meta["lineup_source"] == "starting_grid"
     assert set(rows["driver_id"]) == {"a", "b", "c", "d"}
+    d = rows.set_index("driver_id").loc["d"]
+    assert d["grid"] == 4                       # 4 cars: the back of the field
+    assert d["pit_lane_start"] == 1
+
+
+def test_complete_starting_grid_adds_nobody(conn, weekend):
+    # Every qualifier is on the grid: the lineup is exactly the grid.
+    rows, _ = prediction_rows(conn, weekend["event"], "post_quali")
+    assert sorted(rows["grid"]) == [1, 2, 3, 4]
+    assert rows["pit_lane_start"].sum() == 0
+
+
+def test_an_unmatched_car_on_the_grid_is_not_added_twice(conn, weekend):
+    # d's car IS on the grid, but its qualifying entry couldn't be matched
+    # to a driver. d is missing by name, not by car, so d must not be added
+    # again at the back (that would put one car on the grid twice).
+    conn.execute("UPDATE session_entries SET driver_id = NULL WHERE session_id = ? AND car_number = ?",
+                 (weekend["Q"], CARS["d"]))
+    rows, _ = prediction_rows(conn, weekend["event"], "post_quali")
+    assert "d" not in set(rows["driver_id"])
 
 
 @pytest.mark.xfail(strict=True, reason="BUG 2: pit-lane flag is 1 in training but 0 live for the same start")

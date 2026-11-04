@@ -188,11 +188,53 @@ def last_pre_quali_lineup(conn: sqlite3.Connection, info: dict) -> pd.DataFrame:
     return pd.DataFrame(columns=["driver_id", "constructor_id"])
 
 
+def add_missing_starters(conn: sqlite3.Connection, info: dict, grid: pd.DataFrame) -> pd.DataFrame:
+    """`grid` plus every driver who qualified but whose car isn't on it, as a
+    pit-lane starter (grid 0).
+
+    Why: OpenF1's starting grid sometimes leaves pit-lane starters out
+    altogether (2023 Australia: Perez and Bottas; 2023 Netherlands:
+    Magnussen). Without this they'd vanish from the post-quali prediction.
+    Grid 0 is how the official result records a pit-lane start, so
+    build_race_features treats them exactly as in training: flagged, and
+    moved to the back of the field.
+
+    Who "qualified": Jolpica's qualifying, or the last pre-qualifying lineup
+    if that isn't loaded yet (same sources as the qualifying fallback below).
+    A driver is only added if his car number is NOT on the grid, so a car
+    that is on the grid but couldn't be matched to a driver isn't added twice.
+    """
+    quali_id = info["quali_session_id"]
+    qualified = pd.read_sql_query(
+        "SELECT driver_id, constructor_id FROM qualifying WHERE session_id = ?",
+        conn, params=(quali_id,))
+    if qualified.empty:
+        qualified = last_pre_quali_lineup(conn, info)
+        qualified = qualified[~qualified["driver_id"].str.startswith("provisional_")]
+
+    cars_on_grid = {row["car_number"] for row in conn.execute(
+        "SELECT car_number FROM starting_grid WHERE session_id = ?", (quali_id,))}
+    # Each driver's car number this weekend, from ANY of the weekend's entry
+    # lists (car numbers are unique within a weekend): if the qualifying entry
+    # wasn't matched to a driver, practice usually was.
+    car_of = {row["driver_id"]: row["car_number"] for row in conn.execute(
+        "SELECT se.driver_id, se.car_number FROM session_entries se "
+        "JOIN sessions s ON s.session_id = se.session_id "
+        "WHERE s.event_id = ? AND se.driver_id IS NOT NULL", (info["event_id"],))}
+
+    missing = qualified[~qualified["driver_id"].isin(grid["driver_id"])]
+    missing = missing[~missing["driver_id"].map(car_of).isin(cars_on_grid)]
+    if missing.empty:
+        return grid
+    return pd.concat([grid, missing.assign(grid=0)], ignore_index=True)
+
+
 def grid_lineup(conn: sqlite3.Connection, info: dict) -> tuple[pd.DataFrame, str]:
     """driver_id, constructor_id, grid for the post-quali stage, plus which source was used.
 
     1. 'starting_grid': OpenF1's official grid (after penalties), stored by the
-       OpenF1 loader against the qualifying session.
+       OpenF1 loader against the qualifying session. Qualified drivers it
+       leaves out are added as pit-lane starters (add_missing_starters).
     2. 'qualifying': Jolpica's qualifying order, if there's no starting grid
        (not published yet, or OpenF1 never had it). Drivers in the
        pre-qualifying lineup who didn't set a qualifying time go to the back.
@@ -208,7 +250,7 @@ def grid_lineup(conn: sqlite3.Connection, info: dict) -> tuple[pd.DataFrame, str
         """,
         conn, params=(quali_id,))
     if not grid.empty:
-        return grid, "starting_grid"
+        return add_missing_starters(conn, info, grid), "starting_grid"
 
     grid = pd.read_sql_query(
         "SELECT driver_id, constructor_id, position AS grid FROM qualifying "
