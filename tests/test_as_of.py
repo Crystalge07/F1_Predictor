@@ -171,3 +171,24 @@ def test_upcoming_must_be_one_race(conn, weekend):
 def test_unknown_stage_rejected(conn, weekend):
     with pytest.raises(ValueError, match="Unknown stage"):
         prediction_rows(conn, weekend["event"], "after_fp1")
+
+
+@pytest.mark.parametrize("stage", ["pre_weekend", "practice", "post_quali"])
+def test_earlier_races_are_the_same_with_or_without_the_predicted_race_swapped_in(conn, weekend, stage):
+    # predict/stage.make_prediction builds the feature table twice: once with
+    # the predicted race swapped for its as-of rows (prediction_rows), once
+    # plain, for the training history. That's only right if every EARLIER
+    # race's rows are identical in both (every feature looks backwards), so
+    # the model is trained on exactly the history its prediction rows were
+    # computed from. Checked on the real database too (2026-11-03: 3,854
+    # rows, identical; only actual_position's dtype differs, int vs float,
+    # because the upcoming rows have no result).
+    import pandas as pd
+    from f1predictor.features.as_of import event_info, upcoming_rows
+
+    info = event_info(conn, weekend["event"])
+    upcoming, _ = upcoming_rows(conn, info, stage)
+    plain = build_race_features(conn)
+    swapped = build_race_features(conn, upcoming=upcoming)
+    earlier = lambda table: table[table["race_date"] < info["race_date"]].reset_index(drop=True)
+    pd.testing.assert_frame_equal(earlier(plain), earlier(swapped), check_dtype=False)

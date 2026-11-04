@@ -160,7 +160,9 @@ def make_prediction(conn: sqlite3.Connection, event_id: int, stage: str,
     # results are exactly what the model would have known. (This builds the
     # feature table a second time; prediction_rows built one with the race
     # swapped in. Rows of earlier races are identical in both, and a build
-    # takes a few seconds, so clarity wins over saving it.)
+    # takes a few seconds, so clarity wins over saving it: measured
+    # 2026-11-03, 2.6s of a 5.6s prediction, at most a few predictions an
+    # hour. The "identical" is pinned by tests/test_as_of.py.)
     table = build_race_features(conn)
     history = table[table["race_date"] < race_date]
     if history.empty:
