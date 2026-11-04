@@ -10,21 +10,21 @@ Two levels:
    their chances can only go down. This holds exactly, not just on average.
 
 2. The real trained model, 2026 R19 (tests/real_db.py; skipped without the
-   database). Here the model sits in between, and XGBoost is NOT monotone by
-   construction: a tree can learn "0.26% off in practice -> better finish
-   than 0.25%" from noise.
-     * post-quali, grid: passes. The model's raw output is non-monotone for
-       18 of 22 drivers (up to 0.38 places), but the 0.9 grid weight swamps it.
-     * practice, short-run pace: BUG 6 (xfail). The model's raw output is
-       non-monotone for every driver (up to 2.3 places), and with the model
-       order at 0.75 of the blend it reaches the probabilities: e.g. Piastri's
-       podium chance is 15% at 0.25% off the pace and 27% at 0.5% off.
+   database). XGBoost isn't monotone by construction: a tree can learn
+   "0.26% off in practice -> better finish than 0.25%" from noise. Before the
+   fix (was BUG 6) that happened for every driver in the practice model (up
+   to 2.3 places), and with the model's order at 0.75 of the blend it reached
+   the probabilities: Piastri's podium chance was 15% at 0.25% off the pace
+   and 27% at 0.5% off. Fixed with monotone constraints on grid, qualifying
+   gap and both practice gaps (models/position.MONOTONE_DIRECTIONS). Checked
+   on the raw model output and on the final probabilities.
 """
 
 import numpy as np
 import pandas as pd
 import pytest
 
+from f1predictor.models.position import MONOTONE_DIRECTIONS
 from f1predictor.simulate.probabilities import race_probabilities
 
 import real_db
@@ -83,11 +83,29 @@ def reversals(stage: str, feature: str, values: list[float]) -> dict[str, float]
     return found
 
 
+@pytest.mark.parametrize("stage, feature, values", [
+    ("post_quali", "grid", [float(s) for s in range(1, 23)]),
+    ("post_quali", "quali_gap_pct", [i * 0.1 for i in range(31)]),
+    ("practice", "short_run_gap_pct", [i * 0.1 for i in range(31)]),
+    ("practice", "long_run_gap_pct", [i * 0.1 for i in range(41)]),
+])
+def test_raw_model_never_predicts_better_for_a_worse_input(stage, feature, values):
+    # The model's own expected position, before any blending: for every
+    # driver, a worse value must never give a better (smaller) prediction.
+    assert MONOTONE_DIRECTIONS[feature] == 1
+    model, race = real_db.stage_setup(stage)
+    columns = list(model.feature_names_in_)
+    for _, row in race.iterrows():
+        grid = pd.DataFrame([row[columns]] * len(values)).astype(float)
+        grid[feature] = values
+        steps = np.diff(model.predict(grid))
+        assert (steps >= -1e-6).all(), f"{row['driver_id']}: predicted better at a worse {feature}"
+
+
 def test_post_quali_better_grid_never_lowers_chances():
     assert reversals("post_quali", "grid", [float(s) for s in range(1, 23)]) == {}
 
 
-@pytest.mark.xfail(strict=True, reason="BUG 6: the practice model isn't monotone in practice pace")
 def test_practice_faster_pace_never_lowers_chances():
     gaps = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]    # % off the fastest lap
     assert reversals("practice", "short_run_gap_pct", gaps) == {}

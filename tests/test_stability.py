@@ -17,11 +17,13 @@ Two levels, as in test_monotonicity.py:
        raw prediction jump.
      * the blend uses the model's ORDER (rank), so a jump that passes another
        driver moves the start by a whole place times the model weight.
-   Post-quali (model weight 0.1): worst move 1.7 points for 0.01% of quali
-   gap: passes. Practice (model weight 0.75): BUG 7 (xfail). 0.01% more
-   practice gap for Piastri moves someone's chance by 16 points, because
-   Piastri crosses a split (6.1 -> ~7.6 raw) and passes two drivers in the
-   model's order. (The same jump, in the wrong direction, is BUG 6.)
+   Before the fix (was BUG 7), 0.01% more practice gap for Piastri moved
+   someone's chance by 16 points: Piastri crossed a split the WRONG way
+   (better prediction for a slower lap, 7.6 -> 6.1) and passed two drivers
+   in the model's order. With monotone constraints
+   (models/position.MONOTONE_DIRECTIONS) the jumps can only go the right
+   way and are smaller: worst move now 1.9 points (practice) and 0
+   (post-quali qualifying gap).
 """
 
 import numpy as np
@@ -88,7 +90,6 @@ def test_tiny_change_tiny_effect(stage, feature, nudge):
     assert move <= MAX_MOVE, f"nudging {driver}'s {feature} by {nudge} moved a chance by {move:.3f}"
 
 
-@pytest.mark.xfail(strict=True, reason="BUG 7: 0.01% of practice pace can move a chance by 16 points")
 def test_practice_tiny_pace_change_tiny_effect():
     move, driver = worst_move("practice", "short_run_gap_pct", 0.01)
     assert move <= MAX_MOVE, f"nudging {driver}'s short_run_gap_pct by 0.01 moved a chance by {move:.3f}"

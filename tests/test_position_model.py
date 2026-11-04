@@ -42,6 +42,14 @@ def test_2027_rows_weigh_the_same_as_2026_rows():
     assert sample_weights(df, WEIGHT_2026).tolist() == [1.0, 8.0, 8.0, 8.0]
 
 
+def test_monotone_constraints_follow_the_column_order():
+    # XGBoost takes the constraints as one number per column, in the order
+    # the model is trained on; every stage trains on a different list.
+    from f1predictor.models.position import monotone_constraints
+    assert monotone_constraints(["driver_form_finish", "grid", "short_run_gap_pct"]) == (0, 1, 1)
+    assert monotone_constraints(["driver_season_points"]) == (0,)
+
+
 def test_model_learns_grid_order():
     df = fake_features([(i, 2024, f"2024-{i:02d}-01") for i in range(1, 11)])
     model = train_model(df)

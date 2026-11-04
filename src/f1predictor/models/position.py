@@ -52,6 +52,30 @@ XGB_PARAMS = {
 }
 
 
+# Monotone constraints: the direction each feature may push the predicted
+# position, whatever the training data's noise suggests.
+#   +1  a higher value can only predict a finish further back (or the same)
+#   -1  a higher value can only predict a finish further forward (or the same)
+# Features not listed are free (0).
+#
+# Why: XGBoost on its own learns whatever the noise says. Before this, the
+# practice model predicted Piastri better at 0.26% off the pace than at 0.25%
+# (2026 Mexico), so a slower practice could RAISE a driver's podium chance by
+# 12 points, and 0.01% of practice pace (about 9 ms) could move a chance by 16
+# points. tests/test_monotonicity.py and tests/test_stability.py check this.
+MONOTONE_DIRECTIONS = {
+    "grid": 1,                # starting further back
+    "quali_gap_pct": 1,       # slower in qualifying
+    "short_run_gap_pct": 1,   # slower over one lap in practice
+    "long_run_gap_pct": 1,    # slower on long runs in practice
+}
+
+
+def monotone_constraints(columns: list[str]) -> tuple[int, ...]:
+    """MONOTONE_DIRECTIONS as XGBoost wants it: one number per column, in order."""
+    return tuple(MONOTONE_DIRECTIONS.get(column, 0) for column in columns)
+
+
 def sample_weights(train: pd.DataFrame, weight_2026: float) -> pd.Series:
     """1.0 for every row, `weight_2026` for rows from the regulation-reset season onward."""
     return (train["season"] >= REGULATION_RESET_SEASON).map({True: weight_2026, False: 1.0})
@@ -66,7 +90,7 @@ def train_model(train: pd.DataFrame, weight_2026: float = 1.0,
     columns it was trained on, so predicting needs no list.
     """
     trainable = train[train["finish_position"].notna()]
-    model = xgb.XGBRegressor(**XGB_PARAMS)
+    model = xgb.XGBRegressor(**XGB_PARAMS, monotone_constraints=monotone_constraints(columns))
     model.fit(
         trainable[columns],
         trainable["finish_position"],
