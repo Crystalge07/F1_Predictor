@@ -276,3 +276,39 @@ def test_record_issues_replaces_previous_issues(conn):
                                                             checks.Issue("b", "warning", "2")])
     checks.record_issues(conn, "jolpica", "2024-results", [])    # re-validated: now clean
     assert conn.execute("SELECT COUNT(*) FROM validation_issues").fetchone()[0] == 0
+
+
+# -----------------------------------------------------------------------------
+# Team ids nobody has classified (architecture review, 2026-11-03)
+# -----------------------------------------------------------------------------
+
+def _team_world():
+    from f1predictor.db.connection import get_connection, init_db
+    c = get_connection(":memory:")
+    init_db(c)
+    c.execute("INSERT INTO circuits (circuit_id, name) VALUES ('x', 'X')")
+    c.execute("INSERT INTO drivers (driver_id, given_name, family_name) VALUES ('a', 'A', 'A')")
+    for team in ("toro_rosso", "rb", "cadillac", "mystery"):
+        c.execute("INSERT INTO constructors (constructor_id, name) VALUES (?, ?)", (team, team))
+
+    def race(season, team):
+        event = c.execute("INSERT INTO events (season, round, name, circuit_id, race_date) "
+                          "VALUES (?, 1, 'GP', 'x', ?)", (season, f"{season}-03-01")).lastrowid
+        session = c.execute("INSERT INTO sessions (event_id, session_type) VALUES (?, 'R')", (event,)).lastrowid
+        c.execute("INSERT INTO results (session_id, driver_id, constructor_id, position, position_text) "
+                  "VALUES (?, 'a', ?, 1, '1')", (session, team))
+    return c, race
+
+
+def test_a_new_team_id_must_be_a_known_rebrand_or_a_declared_new_team():
+    from f1predictor.validate.checks import check_team_ids
+    c, race = _team_world()
+    race(2019, "toro_rosso")
+    assert check_team_ids(c, 2019) == []          # first season in the database: nothing to compare
+    race(2024, "rb")                              # rebrand, in TEAM_LINEAGE: fine
+    assert check_team_ids(c, 2024) == []
+    race(2026, "cadillac")                        # declared in NEW_TEAMS: fine
+    assert check_team_ids(c, 2026) == []
+    race(2027, "mystery")                         # neither: someone has to look
+    [issue] = check_team_ids(c, 2027)
+    assert issue.severity == "warning" and "mystery" in issue.detail

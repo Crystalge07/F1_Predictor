@@ -37,7 +37,7 @@ from f1predictor.pipeline.tick import run_tick
 from f1predictor.predict import stage
 
 from replay_f1 import ReplayF1
-from test_probability_invariants import invariant_problems
+from test_probability_invariants import invariant_problems, order_problems
 
 START = datetime(2026, 10, 26, 0, 0, tzinfo=timezone.utc)    # Monday after Austin
 END = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)      # Tuesday after Mexico City
@@ -132,7 +132,10 @@ def test_the_race_is_scored_and_nothing_is_alerted(replay):
 def test_real_data_loads_and_passes_validation(replay):
     conn, _ = replay
     status = dict(conn.execute("SELECT item_key, status FROM ingestion_log WHERE item_key LIKE '2026-19-%'"))
-    assert status == {f"2026-19-{t}": "ok" for t in ("FP1", "FP2", "FP3", "Q", "R", "grid")}
+    assert status == {**{f"2026-19-{t}": "ok" for t in ("FP1", "FP2", "FP3", "Q", "R", "grid")},
+                      # The replay runs past race + 24h, so the result was re-checked
+                      # once (pipeline/plan.RESULT_RECHECKS); it hadn't changed.
+                      "2026-19-results-recheck-24h": "ok"}
     assert conn.execute("SELECT COUNT(*) FROM validation_issues WHERE severity = 'error'").fetchone()[0] == 0
     # A real quirk, handled: OpenF1's FP3 driver list has 21 cars, but 22
     # set laps. The missing one (Lawson, car 30) is still saved, and matched
@@ -249,6 +252,8 @@ def test_logged_runs_obey_probability_invariants(replay):
         rows = pd.read_sql_query("SELECT * FROM predictions WHERE run_id = ?", conn,
                                  params=(run["run_id"],))
         assert len(rows) == 22, f"R{rnd} {stage_name}: {len(rows)} drivers logged"
-        if invariant_problems(rows):
-            problems[f"R{rnd} {stage_name}"] = invariant_problems(rows)
+        # These runs are made by the current code, so the order rule applies too.
+        found = invariant_problems(rows) + order_problems(rows)
+        if found:
+            problems[f"R{rnd} {stage_name}"] = found
     assert problems == {}

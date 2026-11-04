@@ -27,6 +27,7 @@ import pandas as pd
 
 from f1predictor import settings
 from f1predictor.db.connection import get_connection
+from f1predictor.evaluate.splits import split_races
 from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
@@ -38,7 +39,6 @@ from f1predictor.simulate.probabilities import race_probabilities, score_probabi
 STAGES = {"pre_weekend": "champ_rank", "practice": "practice_rank"}
 NOISE_CANDIDATES = [1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
 ANCHOR_WEIGHT_CANDIDATES = [0.0, 0.25, 0.5, 0.75, 1.0]
-LAST_CALIBRATION_ROUND_2026 = 9
 
 
 def simulate_all(races, anchor, weight, noise_sd):
@@ -60,10 +60,8 @@ def main() -> None:
     features = add_baseline_ranks(features)
     dnf = add_dnf_probability(features)[["session_id", "driver_id", "dnf_prob"]]
 
-    sessions = features[["session_id", "season", "round"]].drop_duplicates()
-    early_2026 = (sessions.season == 2026) & (sessions["round"] <= LAST_CALIBRATION_ROUND_2026)
-    calibrate_ids = sessions[(sessions.season == 2024) | early_2026].session_id.tolist()
-    test_ids = sessions[(sessions.season == 2025) | ((sessions.season == 2026) & ~early_2026)].session_id.tolist()
+    # Calibration / held-out races: the protocol's split (evaluate/splits.py).
+    calibrate_ids, test_ids = split_races(features)
 
     for stage, anchor in STAGES.items():
         columns = STAGE_FEATURES[stage]

@@ -406,6 +406,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     driver_id         TEXT NOT NULL REFERENCES drivers (driver_id),
     constructor_id    TEXT REFERENCES constructors (constructor_id),
     -- 1..N: the predicted finishing order (what MAE / Spearman are scored on).
+    -- Since 2026-11-03 the simulator's order (predict/stage.py); runs logged
+    -- before that used the position model's raw order.
     predicted_rank    INTEGER NOT NULL,
     -- The anchor the simulator blends with: the grid slot after qualifying,
     -- championship / practice order before it (simulate/probabilities.py).
@@ -461,6 +463,20 @@ CREATE TABLE IF NOT EXISTS scores (
     scored_at_utc  TIMESTAMP NOT NULL,
 
     PRIMARY KEY (run_id, metric)
+);
+
+-- What each race's runs were last scored against (architecture review,
+-- 2026-11-03). The official result can change after a race is scored: a
+-- disqualification or time penalty decided hours or days later. The planner
+-- compares the result in `results` with this snapshot and, if they differ,
+-- re-scores the race's runs and the tick alerts (pipeline/plan.py, tick.py).
+-- Bookkeeping, not part of the prediction log, so it can be overwritten.
+CREATE TABLE IF NOT EXISTS scored_results (
+    event_id      INTEGER PRIMARY KEY REFERENCES events (event_id),
+    -- {driver_id: [position, position_text]} as JSON with sorted keys
+    -- (evaluate/scorer.result_snapshot), so equal results give equal text.
+    result_json   TEXT NOT NULL,
+    scored_at_utc TIMESTAMP NOT NULL
 );
 
 -- -----------------------------------------------------------------------------

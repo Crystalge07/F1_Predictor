@@ -108,8 +108,13 @@ def stage_cutoff(info: dict, stage: str) -> str:
 
     pre_weekend: before the first session of the weekend
     practice:    before qualifying (on 2024+ sprint weekends this includes
-                 the sprint, which runs before qualifying)
-    post_quali:  before the race
+                 the sprint, which runs before qualifying). If the weekend
+                 has NO qualifying (cancelled and taken off the calendar),
+                 before the race: everything that ran is "practice" then
+                 (architecture review, 2026-11-03; before, the stage
+                 couldn't be predicted at all).
+    post_quali:  before the race. Needs a qualifying session: without one
+                 there's no grid to predict from (stage_lineup refuses).
     """
     starts = {t: s for t, s in info["starts"].items() if s is not None}
     if stage == "pre_weekend":
@@ -119,6 +124,8 @@ def stage_cutoff(info: dict, stage: str) -> str:
     key = {"practice": "Q", "post_quali": "R"}.get(stage)
     if key is None:
         raise ValueError(f"Unknown stage {stage!r}; expected one of {STAGES}")
+    if stage == "practice" and "Q" not in info["session_ids"]:
+        key = "R"   # no qualifying this weekend (see above)
     if key not in starts:
         raise ValueError(f"Event {info['event_id']} has no {key} start time")
     return starts[key]
@@ -282,6 +289,11 @@ def stage_lineup(conn: sqlite3.Connection, info: dict, stage: str) -> tuple[pd.D
             return previous_race_lineup(conn, info["race_date"]), "previous_race"
         return lineup, "practice_entries"
     if stage == "post_quali":
+        if info["quali_session_id"] is None:
+            # No qualifying this weekend: no grid, and nothing a post-quali
+            # model could add to the practice prediction. Refused, not guessed.
+            raise ValueError(f"Event {info['event_id']} has no qualifying session: "
+                             "no post-quali prediction (the practice prediction covers it)")
         return grid_lineup(conn, info)
     raise ValueError(f"Unknown stage {stage!r}; expected one of {STAGES}")
 

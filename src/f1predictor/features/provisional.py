@@ -72,9 +72,12 @@ def provisional_cars(conn: sqlite3.Connection, event_id: int | None = None) -> p
         WITH pre AS (
             SELECT s.event_id, s.session_id, s.start_time_utc
             FROM sessions s
-            JOIN sessions q ON q.event_id = s.event_id AND q.session_type = 'Q'
+            -- No qualifying on the calendar (cancelled): up to the race instead,
+            -- as features/as_of.stage_cutoff does.
+            LEFT JOIN sessions q    ON q.event_id = s.event_id AND q.session_type = 'Q'
+            JOIN sessions race      ON race.event_id = s.event_id AND race.session_type = 'R'
             WHERE s.session_type IN ('FP1', 'FP2', 'FP3', 'SQ', 'S')
-              AND s.start_time_utc < q.start_time_utc
+              AND s.start_time_utc < COALESCE(q.start_time_utc, race.start_time_utc)
               AND EXISTS (SELECT 1 FROM session_entries x
                           WHERE x.session_id = s.session_id AND x.driver_id IS NOT NULL)
               {"AND s.event_id = :event_id" if event_id is not None else ""}

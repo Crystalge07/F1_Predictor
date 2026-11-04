@@ -285,3 +285,25 @@ def test_a_cancelled_fp3_predicts_practice_from_fp1_and_fp2():
     assert new_alerts(reports) == []
     assert logged_stages(conn) == {"pre_weekend", "practice", "post_quali"}
     assert scored_runs(conn) == 3
+
+
+def test_a_cancelled_qualifying_still_gets_a_practice_prediction_and_says_why_post_quali_is_missing():
+    # Qualifying is called off (a typhoon, say) and dropped from the calendar;
+    # the grid is set some other way and the race runs. Architecture review,
+    # 2026-11-03: the practice stage used to need a qualifying start time as
+    # its cutoff, so it was silently never planned; and the post-quali stage
+    # was reported as a plain "missed". Now the practice stage runs up to the
+    # race start, and post-quali's miss says there was no qualifying.
+    world = FakeF1(now=START, cancelled={(2027, 1, "Q")})
+    conn, reports = run_week(world)
+
+    assert logged_stages(conn) == {"pre_weekend", "practice"}
+    alerts = [message for _when, message in new_alerts(reports)]
+    assert len(alerts) == 1 and alerts[0].startswith("missed: 2027 R1 post_quali")
+    assert "no qualifying on the calendar" in alerts[0]
+    # The practice prediction had practice pace for every driver.
+    paced = count(conn, "SELECT COUNT(*) FROM prediction_features f JOIN prediction_runs r USING (run_id) "
+                        "WHERE r.stage = 'practice' AND f.feature = 'short_run_gap_pct' AND f.value IS NOT NULL")
+    assert paced == 20
+    # And both logged runs are scored once the result is in.
+    assert scored_runs(conn) == 2

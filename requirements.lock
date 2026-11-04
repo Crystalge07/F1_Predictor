@@ -1,0 +1,30 @@
+# Exact versions the project is tested on. Written by scripts/lock_requirements.py;
+# don't edit by hand. Used as a pip CONSTRAINTS file:
+#     pip install -e . -c requirements.lock
+# Python 3.10 (the workflow's version).
+certifi==2026.10.23
+charset-normalizer==3.5.2
+cloudpickle==3.1.2
+exceptiongroup==1.3.1
+idna==3.20
+iniconfig==2.3.1
+joblib==1.6.0
+numpy==2.2.6
+packaging==26.3
+pandas==2.3.3
+pluggy==1.7.0
+pygments==2.21.0
+pytest==9.2.0
+python-dateutil==3.0.0
+pytz==2026.6
+pyyaml==6.0.3
+requests==2.34.2
+scikit-learn==1.7.2
+scipy==1.15.3
+six==1.17.0
+threadpoolctl==3.7.0
+tomli==2.5.0
+typing-extensions==4.16.0
+tzdata==2026.6
+urllib3==2.8.0
+xgboost==3.2.0

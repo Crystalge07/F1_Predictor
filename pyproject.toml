@@ -15,12 +15,13 @@ description = "Self-updating F1 race prediction platform"
 # Your machine has Python 3.10, so that's the minimum we support.
 requires-python = ">=3.10"
 
-# Runtime dependencies for Phase 1. We only use lower bounds (>=) so pip can pick
-# the newest compatible versions; we'll pin exact versions later for reproducibility.
+# Runtime dependencies. Lower bounds only (>=) here, so the package stays easy
+# to install; the EXACT versions the project is tested and run on are pinned in
+# requirements.lock (written by scripts/lock_requirements.py), which the
+# pipeline installs with: pip install -e . -c requirements.lock
 dependencies = [
-    "fastf1>=3.4",     # lap times, stints, weather, track status per session
     "requests>=2.31",  # HTTP client for calling the Jolpica API directly
-    "pandas>=2.0",     # FastF1 returns DataFrames; we'll also use it for loading data
+    "pandas>=2.0",     # tables in memory: the feature table, model inputs, results
     # Phase 2: the gradient-boosted model. On a Mac it also needs the OpenMP
     # runtime, installed once with: brew install libomp
     "xgboost>=2.0",

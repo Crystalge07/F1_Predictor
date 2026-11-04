@@ -22,6 +22,7 @@ data/models/post_quali.json for the next phases.
 from f1predictor import config, settings
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.metrics import average_scores, score_race
+from f1predictor.evaluate.splits import HELD_OUT_SEASONS, LAST_CALIBRATION_ROUND, SPLIT_SEASON
 from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import POST_QUALI_FEATURES, build_race_features
 from f1predictor.models.baselines import actual_result, grid_order
@@ -29,7 +30,6 @@ from f1predictor.models.position import predict_order, train_model
 
 # Candidate 2026 multipliers. 1 = no extra weight (2026 counts like any season).
 WEIGHT_CANDIDATES = [1, 2, 3, 5, 8, 12]
-LAST_TUNING_ROUND = 9
 
 
 def xgb_trainer(weight_2026: float):
@@ -63,9 +63,14 @@ def main() -> None:
         # Race lists for each group, in date order.
         races = (features[["session_id", "season", "round", "race_date"]]
                  .drop_duplicates().sort_values("race_date"))
-        tune = races[(races.season == 2026) & (races["round"] <= LAST_TUNING_ROUND)].session_id.tolist()
-        gate = races[(races.season == 2026) & (races["round"] > LAST_TUNING_ROUND)].session_id.tolist()
-        check = races[races.season == 2025].session_id.tolist()
+        # The 2026 weight can only be tuned on 2026 races, so this script
+        # uses the 2026 part of the protocol's split (evaluate/splits.py):
+        # tune = 2026's calibration rounds, gate = its held-out rounds, and
+        # check = the held-out 2025 season.
+        in_split_season = races[races.season == SPLIT_SEASON]
+        tune = in_split_season[in_split_season["round"] <= LAST_CALIBRATION_ROUND].session_id.tolist()
+        gate = in_split_season[in_split_season["round"] > LAST_CALIBRATION_ROUND].session_id.tolist()
+        check = races[races.season.isin(HELD_OUT_SEASONS)].session_id.tolist()
 
         # Real results and the baseline's predictions, from the same functions
         # that produced the Phase 2 baseline numbers.
@@ -79,7 +84,7 @@ def main() -> None:
         return score({s: baseline[s] for s in sessions}, actuals)
 
     # --- 1. Tune the 2026 weight on TUNE races only -----------------------------
-    print(f"Tuning the 2026 weight on 2026 rounds 1-{LAST_TUNING_ROUND} "
+    print(f"Tuning the 2026 weight on 2026 rounds 1-{LAST_CALIBRATION_ROUND} "
           f"(grid baseline MAE {baseline_on(tune)['position_mae']:.2f})")
     results = {}
     for weight in WEIGHT_CANDIDATES:
@@ -96,7 +101,7 @@ def main() -> None:
     trainer = xgb_trainer(best_weight)
     gate_model = score(walk_forward(features, gate, trainer), actuals)
     check_model = score(walk_forward(features, check, trainer), actuals)
-    print_comparison(f"GATE: 2026 rounds {LAST_TUNING_ROUND + 1}+", gate_model, baseline_on(gate), len(gate))
+    print_comparison(f"GATE: 2026 rounds {LAST_CALIBRATION_ROUND + 1}+", gate_model, baseline_on(gate), len(gate))
     print_comparison("CHECK: 2025 season", check_model, baseline_on(check), len(check))
 
     # The original gate ("beat the grid on MAE on both held-out sets") was not

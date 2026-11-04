@@ -28,6 +28,7 @@ Compared on TEST, by Brier score (lower = better):
 
 from f1predictor import settings
 from f1predictor.db.connection import get_connection
+from f1predictor.evaluate.splits import describe, split_races
 from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import build_race_features
 from f1predictor.models.baselines import grid_probabilities
@@ -39,7 +40,6 @@ import pandas as pd
 
 NOISE_CANDIDATES = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0]
 GRID_WEIGHT_CANDIDATES = [0.0, 0.25, 0.5, 0.75, 0.9, 1.0]
-LAST_CALIBRATION_ROUND_2026 = 9
 
 
 def position_trainer(history: pd.DataFrame):
@@ -70,10 +70,8 @@ def main() -> None:
     # rows at once. Keep only the columns we need, to merge onto predictions.
     dnf = add_dnf_probability(features)[["session_id", "driver_id", "dnf_prob"]]
 
-    sessions = features[["session_id", "season", "round"]].drop_duplicates()
-    early_2026 = (sessions.season == 2026) & (sessions["round"] <= LAST_CALIBRATION_ROUND_2026)
-    calibrate_ids = sessions[(sessions.season == 2024) | early_2026].session_id.tolist()
-    test_ids = sessions[(sessions.season == 2025) | ((sessions.season == 2026) & ~early_2026)].session_id.tolist()
+    # Calibration / held-out races: the protocol's split (evaluate/splits.py).
+    calibrate_ids, test_ids = split_races(features)
 
     # Step 1 (the slow part): one walk-forward model per race.
     print(f"Training {len(calibrate_ids) + len(test_ids)} walk-forward models...")
@@ -85,7 +83,7 @@ def main() -> None:
 
     # Step 2: pick grid weight + noise together on CALIBRATE. Score = win +
     # podium Brier, so neither outcome is ignored.
-    print(f"\nCalibrating on 2024 + 2026 rounds 1-{LAST_CALIBRATION_ROUND_2026} "
+    print(f"\nCalibrating on {describe()[0]} "
           f"({len(calibrate_ids)} races). Best 5 of {len(GRID_WEIGHT_CANDIDATES) * len(NOISE_CANDIDATES)}:")
     totals = {}
     for gw in GRID_WEIGHT_CANDIDATES:
@@ -107,7 +105,7 @@ def main() -> None:
     # Flat DNF = the average DNF chance the model handed out over the test races.
     flat = simulate_all(test, best_sd, best_gw, flat_dnf=float(pd.concat(test.values()).dnf_prob.mean()))
 
-    print(f"\nTEST: 2025 + 2026 rounds {LAST_CALIBRATION_ROUND_2026 + 1}+ ({len(test_ids)} races)")
+    print(f"\nTEST: {describe()[1]} ({len(test_ids)} races)")
     print(f"  {'':<18} {'win Brier':>10} {'podium Brier':>13}")
     base = score_probabilities(grid)
     for name, rows in (("grid baseline", grid), ("grid + simulator", grid_sim),

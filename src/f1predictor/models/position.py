@@ -10,9 +10,16 @@ predicted position. The model never has to output exact integers 1..20: we
 only care about the ORDER, so predictions like 3.4, 3.9, 7.1 are fine.
 
 Sample weights (the 2026 decision from the PRD): every training row gets a
-weight; 2026 rows get `weight_2026` (e.g. 3.0 = each 2026 row counts like
-three older rows). 2026 is a regulation reset, so recent races should matter
-more. The multiplier is tuned in scripts/train_post_quali.py.
+weight; rows from the regulation-reset season ON get `weight_2026` (8.0 =
+each such row counts like eight older rows). 2026 is a regulation reset, so
+races under the new rules should matter more. The multiplier was tuned in
+scripts/train_post_quali.py and is frozen.
+
+In 2027 that means 2026 AND 2027 rows both count x8 (decision 2026-11-04,
+docs/PRD.md): the weight belongs to the regulation era, not to "the latest
+season", so 2027 races are not weighted above 2026 ones. A 2026/2027 split
+can't be tuned without 2027 data; revisit after the season. Pinned by
+tests/test_position_model.py::test_2027_rows_weigh_the_same_as_2026_rows.
 """
 
 import pandas as pd

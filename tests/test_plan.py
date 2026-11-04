@@ -214,3 +214,58 @@ def test_jolpica_results_missing_two_days_are_late_but_still_fetched(conn, ids):
                  "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
     planned = round2(conn, at("2027-03-16T18:00"))     # race over Sun 17:30; now Tue 18:00
     assert ("fetch_jolpica", "results") in planned and ("late", "results") in planned
+
+
+# -----------------------------------------------------------------------------
+# Results revised after the race (architecture review, 2026-11-03)
+# -----------------------------------------------------------------------------
+
+def scored_round2(c, ids):
+    """Round 2 raced, its result in and its three live runs scored against it."""
+    from f1predictor.evaluate.scorer import record_scored_snapshot, result_snapshot
+    run_ids = [add_live_run(c, ids[2]["event"], stage) for stage in ("pre_weekend", "practice", "post_quali")]
+    fetched(c, "FP1", "FP2", "FP3", "Q", "grid", "R")
+    c.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+              "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    add_result(c, ids[2]["R"])
+    for run_id in run_ids:
+        c.execute("INSERT INTO scores (run_id, metric, model_value, scored_at_utc) "
+                  "VALUES (?, 'position_mae', 0, 'x')", (run_id,))
+    record_scored_snapshot(c, ids[2]["event"], result_snapshot(c, ids[2]["event"]))
+
+
+def test_the_result_is_rechecked_24h_and_72h_after_the_race(conn, ids):
+    from f1predictor.pipeline.plan import RESULT_RECHECKS, recheck_key
+    scored_round2(conn, ids)
+    # Race ready Sun 17:30. Nothing to do on Sunday evening...
+    assert round2(conn, at("2027-03-14T18:00")) == []
+    # ...a re-check from Monday 17:30...
+    assert round2(conn, at("2027-03-15T17:31")) == [("fetch_jolpica", "recheck_24h")]
+    # ...done once it worked (pipeline/fetch.py marks it)...
+    ingestion_log.record(conn, "jolpica", recheck_key(2027, 2, RESULT_RECHECKS[0]), "ok")
+    assert round2(conn, at("2027-03-15T18:00")) == []
+    # ...and the second one from Wednesday 17:30.
+    assert round2(conn, at("2027-03-17T17:31")) == [("fetch_jolpica", "recheck_72h")]
+
+
+def test_a_failed_recheck_is_planned_again(conn, ids):
+    from f1predictor.pipeline.plan import RESULT_RECHECKS, recheck_key
+    scored_round2(conn, ids)
+    ingestion_log.record(conn, "jolpica", recheck_key(2027, 2, RESULT_RECHECKS[0]), "failed", message="503")
+    assert ("fetch_jolpica", "recheck_24h") in round2(conn, at("2027-03-15T19:00"))
+
+
+def test_a_result_changed_after_scoring_is_rescored(conn, ids):
+    scored_round2(conn, ids)
+    assert round2(conn, at("2027-03-14T18:00")) == []
+    # The stewards disqualify the winner on Sunday night.
+    # (Jolpica keeps a classified position on a disqualified row; position_text says 'D'.)
+    conn.execute("UPDATE results SET position_text = 'D' WHERE session_id = ?", (ids[2]["R"],))
+    assert round2(conn, at("2027-03-14T23:00")) == [("rescore", "race")]
+
+
+def test_a_race_scored_before_snapshots_existed_is_rescored_once(conn, ids):
+    scored_round2(conn, ids)
+    conn.execute("DELETE FROM scored_results")
+    [action] = [a for a in plan(conn, at("2027-03-14T18:00")) if a.round == 2]
+    assert action.kind == "rescore" and "no record" in action.reason

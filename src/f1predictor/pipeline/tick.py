@@ -13,7 +13,10 @@ The scheduler runs this every hour (Phase 5, step 5). Each tick:
                 again while the cutoff hasn't passed.
                 This is the automated version of "dry run first": the
                 prediction is built and checked in memory, and only then written.
-    3. SCORE    plan again, then score every race whose result is in. Then
+    3. SCORE    plan again, then score every race whose result is in, and
+                re-score any whose official result changed since (a late
+                penalty: plan.RESULT_RECHECKS re-fetches results 24h and
+                72h after each race; a change raises 'result_revised'). Then
                 the guardrail (pipeline/drift.py): alert if, over the last 8
                 scored live races, the model is >15% worse than its
                 baseline on places off or podium Brier. Alert only.
@@ -37,13 +40,15 @@ dry_run=True: fetches data (safe: upserts, validated, idempotent) and builds
 and checks predictions, but writes nothing to the prediction log or scores.
 """
 
+import hashlib
 import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from f1predictor.evaluate.scorer import score_runs
+from f1predictor.evaluate.scorer import (record_scored_snapshot, result_changes, result_snapshot,
+                                         score_runs, scored_snapshot)
 from f1predictor.pipeline.drift import drift_alerts
 from f1predictor.pipeline.fetch import run_fetches
 from f1predictor.pipeline.plan import Action, as_utc, parse_utc, plan, to_utc_text
@@ -93,6 +98,9 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
 
     Clients default to real ones (pipeline/fetch.make_clients); tests pass fakes.
     n_sims overrides the number of simulated races (tests use fewer, for speed).
+
+    Each step is its own function below, in the order they run. Every step
+    after the first re-plans: the previous step may have made something due.
     """
     from f1predictor.pipeline.fetch import make_clients
 
@@ -102,13 +110,29 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
     if jolpica_client is None or openf1_client is None:
         jolpica_client, openf1_client = make_clients()
     report = TickReport(now=to_utc_text(now), dry_run=dry_run)
+
+    tick_id = _start(conn, report)                                   # record the tick; gap check
+    _fetch(conn, now, report, jolpica_client, openf1_client)         # 1. fetch what's ready
+    _predict(conn, now, report, n_sims)                              # 2. predict live, checked
+    _score(conn, now, report)                                        # 3. score / re-score
+    _guardrail(conn, report)                                         # 3b. model vs baseline
+    _raise_alerts(conn, now, report)                                 # 4. alerts, once each
+    _finish(conn, tick_id, report)
+    for line in report.lines():
+        logger.info(line)
+    return report
+
+
+def _start(conn: sqlite3.Connection, report: TickReport) -> int:
+    """Record that a tick started (pipeline_ticks) and raise a 'gap' alert if
+    the previous one was more than MAX_GAP ago. Returns the tick_id."""
     # When the previous run started, for the gap check below. Real clock
     # times on both sides (started_at_utc), not `now`, which a test or a
     # --now dry run can set to any time.
     previous = conn.execute("SELECT MAX(started_at_utc) FROM pipeline_ticks").fetchone()[0]
     started = datetime.now(timezone.utc)
     tick_id = conn.execute("INSERT INTO pipeline_ticks (started_at_utc, dry_run) VALUES (?, ?)",
-                           (to_utc_text(started), int(dry_run))).lastrowid
+                           (to_utc_text(started), int(report.dry_run))).lastrowid
     conn.commit()
     if previous is not None and started - parse_utc(previous) > MAX_GAP:
         hours = (started - parse_utc(previous)).total_seconds() / 3600
@@ -117,8 +141,11 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
                               f"gap: no pipeline run for {hours:.1f} hours (previous run started {previous}); "
                               "runs have resumed. Check that the hourly trigger (cron-job.org) and GitHub Actions "
                               "are working, and whether a stage was missed (a 'missed' alert says so)."))
+    return tick_id
 
-    # --- 1. Fetch ------------------------------------------------------------
+
+def _fetch(conn: sqlite3.Connection, now: datetime, report: TickReport, jolpica_client, openf1_client) -> None:
+    """Step 1: fetch everything the planner says is ready."""
     # A failed fetch is NOT an alert by itself: data that's a few minutes
     # late is normal, and the next tick retries. It shows in the report;
     # problems that last are alerted by the planner ('gave_up', 'late'), and
@@ -141,7 +168,9 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
                                   f"invalid data, not saved: {item_key}: {'; '.join(errors)}; "
                                   "retried every tick until it validates"))
 
-    # --- 2. Predict ----------------------------------------------------------
+
+def _predict(conn: sqlite3.Connection, now: datetime, report: TickReport, n_sims: int | None) -> None:
+    """Step 2: make each due stage's prediction, check it, and log exactly that one."""
     for action in plan(conn, now):
         if action.kind != "predict":
             continue
@@ -156,7 +185,7 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
             report.blocked.append(line)
             report.alerts.append((f"blocked:{action.season}:{action.round}:{action.target}", f"not logged, {line}"))
             continue
-        if dry_run:
+        if report.dry_run:
             report.predicted.append(f"{_label(action)} (passed checks; not logged: dry run)")
             continue
         try:
@@ -173,13 +202,23 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
         report.predicted.append(f"{_label(action)} -> live run {run_id} "
                                 f"(favourite {favourite.driver_id} {favourite.p_win:.0%})")
 
-    # --- 3. Score ------------------------------------------------------------
+
+def _score(conn: sqlite3.Connection, now: datetime, report: TickReport) -> None:
+    """Step 3: score every race whose result is in; re-score revised results."""
+    # 'score': runs not scored yet. 'rescore': every run of a race whose
+    # official result changed after it was scored (plan.RESULT_RECHECKS);
+    # scores are upserts, so re-scoring replaces them. Either way the result
+    # the runs were scored against is remembered (scored_results), which is
+    # how the planner notices the next change.
     for action in plan(conn, now):
-        if action.kind != "score" or dry_run:
+        if action.kind not in ("score", "rescore") or report.dry_run:
             continue
+        only_unscored = ("AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)"
+                         if action.kind == "score" else "")
         run_ids = [r[0] for r in conn.execute(
-            "SELECT run_id FROM prediction_runs r WHERE event_id = ? "
-            "AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)", (action.event_id,))]
+            f"SELECT run_id FROM prediction_runs r WHERE event_id = ? {only_unscored}", (action.event_id,))]
+        scored_against = scored_snapshot(conn, action.event_id)
+        snapshot = result_snapshot(conn, action.event_id)
         unresolved: dict[int, list[str]] = {}
         try:
             scored = score_runs(conn, run_ids, unresolved)
@@ -193,7 +232,19 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
             report.alerts.append((f"score_failed:{action.season}:{action.round}",
                                   f"score_failed: {action.season} R{action.round}: {error}; retried next tick"))
             continue
-        report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s)")
+        record_scored_snapshot(conn, action.event_id, snapshot)
+        rescored = " re-scored" if action.kind == "rescore" else ""
+        report.scored.append(f"{action.season} R{action.round}: {len(scored)} run(s){rescored}")
+        # A result that changed after scoring is worth a person's look (the
+        # scorecard just moved). Not alerted when there was simply no record
+        # yet (races scored before scored_results existed). Keyed by the new
+        # result, so each distinct revision alerts once.
+        if action.kind == "rescore" and scored_against is not None:
+            changes = result_changes(scored_against, snapshot)
+            digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()[:8]
+            report.alerts.append((f"result_revised:{action.season}:{action.round}:{digest}",
+                                  f"result_revised: {action.season} R{action.round}: the official result changed "
+                                  f"after scoring ({'; '.join(changes)}); {len(scored)} run(s) re-scored"))
         # A debutant predicted under a temporary id who can't be identified
         # (features/provisional.py): that run was left unscored, not scored
         # wrongly or dropped. Alerted once per car; every tick tries again
@@ -209,7 +260,9 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
                     "(session_entries / results car numbers); the run is scored on the next "
                     "tick once the car matches one driver."))
 
-    # --- 3b. Guardrail: is the live model falling behind its baseline? -----
+
+def _guardrail(conn: sqlite3.Connection, report: TickReport) -> None:
+    """Step 3b: is the live model falling behind its baseline?"""
     # Alert only (pipeline/drift.py). Runs every tick, but each alert names
     # the newest scored race, so it's raised once per race, not every hour.
     try:
@@ -220,7 +273,9 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
         report.alerts.append((f"drift_check_failed:{report.now[:10]}",
                               f"drift_check_failed: the guardrail check crashed: {error}"))
 
-    # --- 4. Informational problems, then the alerts ------------------------------
+
+def _raise_alerts(conn: sqlite3.Connection, now: datetime, report: TickReport) -> None:
+    """Step 4: the planner's informational problems, then every alert not raised before."""
     for action in plan(conn, now):
         if action.kind in ("missed", "gave_up", "late"):
             report.alerts.append((f"{action.kind}:{action.season}:{action.round}:{action.target}",
@@ -231,10 +286,13 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
         if seen:
             continue
         report.new_alerts.append(message)
-        if not dry_run:
+        if not report.dry_run:
             conn.execute("INSERT INTO pipeline_alerts (alert_key, message, first_seen_utc) VALUES (?, ?, ?)",
                          (key, message, report.now))
 
+
+def _finish(conn: sqlite3.Connection, tick_id: int, report: TickReport) -> None:
+    """Close the tick's pipeline_ticks row with its summary."""
     summary = {"fetched": report.fetched, "predicted": report.predicted, "blocked": report.blocked,
                "scored": report.scored, "new_alerts": report.new_alerts}
     with conn:
@@ -243,6 +301,3 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
         conn.execute("UPDATE pipeline_ticks SET finished_at_utc = ?, report_json = ?, new_alerts = ? "
                      "WHERE tick_id = ?", (to_utc_text(datetime.now(timezone.utc)), json.dumps(summary),
                                            len(report.new_alerts), tick_id))
-    for line in report.lines():
-        logger.info(line)
-    return report

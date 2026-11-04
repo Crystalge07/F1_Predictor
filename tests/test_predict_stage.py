@@ -12,7 +12,8 @@ import pytest
 
 from f1predictor.db.connection import init_db
 from f1predictor.features.stages import STAGE_FEATURES
-from f1predictor.predict.stage import make_prediction, model_version, predict_stage, write_run
+from f1predictor.predict.stage import make_prediction, model_order, model_version, predict_stage, write_run
+from f1predictor.simulate.probabilities import STAGE_SETTINGS
 
 # Importing the fixtures makes pytest offer them to the tests in this file too.
 from test_as_of import conn, weekend  # noqa: F401
@@ -123,9 +124,11 @@ def test_a_second_live_run_is_refused_even_without_the_live_checks(conn, weekend
         assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == n, table
 
 
-def test_model_version_names_commit_and_settings():
-    # e.g. 'a1b2c3d+settings.9f8e7d6c' or 'a1b2c3d-dirty+settings.9f8e7d6c'
-    assert re.fullmatch(r"(nogit|[0-9a-f]{4,40}(-dirty)?)\+settings\.[0-9a-f]{8}", model_version())
+def test_model_version_names_commit_settings_and_libraries():
+    # e.g. 'a1b2c3d+settings.9f8e7d6c+xgboost-3.2.0+pandas-2.3.3+...' (or
+    # 'a1b2c3d-dirty+...'). The library part is checked in test_environment.py.
+    assert re.fullmatch(r"(nogit|[0-9a-f]{4,40}(-dirty)?)\+settings\.[0-9a-f]{8}(\+[a-z-]+-[0-9][\w.]*)+",
+                        model_version())
 
 
 def test_init_db_adds_lineup_source_to_an_old_log(tmp_path):
@@ -142,3 +145,26 @@ def test_init_db_adds_lineup_source_to_an_old_log(tmp_path):
     columns = {row[1] for row in conn.execute("PRAGMA table_info(prediction_runs)")}
     assert "lineup_source" in columns
     conn.close()
+
+
+@pytest.mark.parametrize("stage", ["pre_weekend", "post_quali"])
+def test_predicted_rank_is_the_simulators_order(conn, weekend, stage):
+    # predicted_rank = the order of the blended score the simulator starts
+    # from (anchor_weight x anchor slot + the rest x the model's order), so
+    # the order shown and the odds shown next to it agree (decision
+    # 2026-11-03, predict/stage.py docstring).
+    prediction = make_prediction(conn, weekend["event"], stage, n_sims=N_SIMS)
+    drivers = prediction.drivers
+    _anchor, weight, _noise = STAGE_SETTINGS[stage]
+    blended = weight * drivers["anchor_position"] + (1 - weight) * model_order(drivers)
+    by_blend = drivers.assign(b=blended).sort_values(["b", "anchor_position", "driver_id"])
+    assert by_blend["predicted_rank"].tolist() == list(range(1, len(drivers) + 1))
+
+
+def test_model_order_ranks_the_raw_model_numbers(conn, weekend):
+    # The model's own order is still recoverable from the log: rank the
+    # stored expected_position (ties: anchor slot, then driver_id).
+    drivers = make_prediction(conn, weekend["event"], "post_quali", n_sims=N_SIMS).drivers
+    ranks = model_order(drivers)
+    assert sorted(ranks) == list(range(1, len(drivers) + 1))
+    assert drivers.assign(r=ranks).sort_values("r")["expected_position"].is_monotonic_increasing

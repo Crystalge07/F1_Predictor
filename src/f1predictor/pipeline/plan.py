@@ -21,10 +21,14 @@ The actions, in the order a weekend produces them:
                     or (target 'grid') the starting grid once qualifying is in
     fetch_jolpica   Jolpica results/qualifying, once qualifying or the race
                     has ended and its rows aren't in yet; or the season's
-                    schedule, if the current year has no events yet
+                    schedule, if the current year has no events yet; or a
+                    re-check of a race's result RESULT_RECHECKS after it
+                    (stewards' decisions can change it after the flag)
     predict         a live prediction for a stage, once its inputs are in and
                     before its cutoff (features/as_of.stage_cutoff)
     score           a race's logged runs, once the result is in
+    rescore         a race's runs again, because its official result changed
+                    after they were scored (a late penalty or disqualification)
     late            informational: Jolpica data still missing JOLPICA_LATE
                     after it was due (still retried).
     gave_up         informational: a session's data still isn't in GIVE_UP
@@ -41,6 +45,7 @@ When is each stage due? (all times UTC, from the calendar)
     practice     every session before qualifying has been fetched, OR it's
                  within LAST_CALL (2h) of qualifying (predict with whatever practice
                  data exists: a cancelled or broken session mustn't block it).
+                 No qualifying on the calendar at all: the same, up to the race.
     post_quali   qualifying results are in, AND either OpenF1's starting grid
                  is in or it's within LAST_CALL of the race (then the predictor
                  falls back to qualifying order, see features/as_of.py).
@@ -50,6 +55,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from f1predictor.evaluate.scorer import result_snapshot, scored_snapshot
 from f1predictor.features.as_of import PRE_QUALI_SESSION_TYPES
 
 # How long each kind of session usually lasts. The data can't be fetched
@@ -76,6 +82,14 @@ JOLPICA_LATE = timedelta(hours=48)
 # been ready. Practice stages don't wait for it anyway (LAST_CALL); this just
 # stops a session OpenF1 never publishes from being retried for days.
 GIVE_UP = timedelta(hours=24)
+# Re-fetch a race's result this long after it was first due, even though it's
+# already in (architecture review, 2026-11-03). The official result can change
+# after the race: a car disqualified at scrutineering (underweight, plank
+# wear) or a time penalty from a later hearing. Without a re-check, a change
+# only arrived with the next weekend's Jolpica fetch, after the race had been
+# scored on the old result; after a season's last race, never. A changed
+# result is re-scored ('rescore') and alerted (pipeline/tick.py).
+RESULT_RECHECKS = (timedelta(hours=24), timedelta(hours=72))
 # Round 1 has no previous race this season: predict it within this long of FP1.
 PRE_SEASON_WINDOW = timedelta(days=14)
 # Which events the planner looks at: those whose race is within this window
@@ -88,7 +102,7 @@ LOOK_AHEAD = timedelta(days=14)
 @dataclass(frozen=True)
 class Action:
     """One thing the tick should do. frozen=True: actions can't be changed after creation."""
-    kind: str                    # 'fetch_session', 'fetch_jolpica', 'predict', 'score', 'late', 'gave_up', 'missed'
+    kind: str                    # 'fetch_session', 'fetch_jolpica', 'predict', 'score', 'rescore', 'late', 'gave_up', 'missed'
     event_id: int
     season: int
     round: int
@@ -161,6 +175,17 @@ def _openf1_done(conn: sqlite3.Connection, season: int, rnd: int, item: str) -> 
     return row is not None and row["status"] == "ok"
 
 
+def recheck_key(season: int, rnd: int, after: timedelta) -> str:
+    """The ingestion_log key marking a result re-check as done, e.g. '2026-20-results-recheck-24h'."""
+    return f"{season}-{rnd:02d}-results-recheck-{int(after.total_seconds() // 3600)}h"
+
+
+def _jolpica_done(conn: sqlite3.Connection, item_key: str) -> bool:
+    row = conn.execute("SELECT status FROM ingestion_log WHERE source = 'jolpica' AND item_key = ?",
+                       (item_key,)).fetchone()
+    return row is not None and row["status"] == "ok"
+
+
 def _has_rows(conn: sqlite3.Connection, table: str, event_id: int, session_type: str) -> bool:
     """True if `table` (results or qualifying) has rows for this event's session."""
     # The table name is one of two fixed strings chosen in this module, never input.
@@ -185,6 +210,12 @@ def _previous_race_has_result(conn: sqlite3.Connection, season: int, rnd: int) -
                        JOIN events e   ON e.event_id = s.event_id
                        WHERE e.season = ? AND e.round = ?)
         """, (season, rnd - 1)).fetchone()[0] == 1
+
+
+def _scored_runs(conn: sqlite3.Connection, event_id: int) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM prediction_runs r WHERE r.event_id = ? "
+        "AND EXISTS (SELECT 1 FROM scores s WHERE s.run_id = r.run_id)", (event_id,)).fetchone()[0]
 
 
 def _unscored_runs(conn: sqlite3.Connection, event_id: int) -> int:
@@ -253,6 +284,16 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
                     if now >= ready_at + JOLPICA_LATE:
                         act("late", part, f"Jolpica {part} still missing "
                                           f"{JOLPICA_LATE.total_seconds() / 3600:.0f}h after {session_type}; still retrying")
+        # Re-checks of a result that is already in (RESULT_RECHECKS). Marked
+        # done in ingestion_log by pipeline/fetch.py once the refetch worked;
+        # a failed one is simply planned again next tick.
+        if "R" in starts and _has_rows(conn, "results", event_id, "R"):
+            race_ready = starts["R"] + SESSION_LENGTH["R"] + FETCH_DELAY
+            for after in RESULT_RECHECKS:
+                hours = int(after.total_seconds() // 3600)
+                if now >= race_ready + after and not _jolpica_done(conn, recheck_key(season, rnd, after)):
+                    act("fetch_jolpica", f"recheck_{hours}h",
+                        f"re-checking the result {hours}h after the race (late penalties)")
 
         # --- Predicting -------------------------------------------------------
         # (stage, cutoff, are its inputs in?, explanation)
@@ -265,11 +306,16 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             ready = (now >= first_start - PRE_SEASON_WINDOW) if previous is None else previous
             stages.append(("pre_weekend", first_start, ready,
                            "previous race result is in" if previous else "season opener is near"))
-        if "Q" in starts:
+        # The practice stage's cutoff is qualifying, or the race if qualifying
+        # was cancelled and taken off the calendar (features/as_of.stage_cutoff;
+        # before 2026-11-03 such a weekend got no practice prediction at all).
+        practice_cutoff = starts.get("Q") or starts.get("R")
+        if practice_cutoff is not None:
             fetched = all(_openf1_done(conn, season, rnd, t) for t in pre_quali)
-            last_call = now >= starts["Q"] - LAST_CALL
-            stages.append(("practice", starts["Q"], fetched or last_call,
-                           "practice sessions fetched" if fetched else "last call before qualifying"))
+            last_call = now >= practice_cutoff - LAST_CALL
+            stages.append(("practice", practice_cutoff, fetched or last_call,
+                           "practice sessions fetched" if fetched else
+                           "last call before qualifying" if "Q" in starts else "last call before the race"))
         if "R" in starts:
             quali_in = _has_rows(conn, "qualifying", event_id, "Q")
             grid_in = _openf1_done(conn, season, rnd, "grid")
@@ -284,7 +330,11 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
                 # before the first live run ever (the backtested past) never
                 # had a live prediction to make.
                 if live_since is not None and cutoff > live_since:
-                    act("missed", stage, f"cutoff {to_utc_text(cutoff)} passed with no live run")
+                    # Say why when it's not the pipeline's fault: a post-quali
+                    # stage can't happen without a qualifying session.
+                    cause = ("; no qualifying on the calendar (cancelled?), so no post-quali prediction"
+                             if stage == "post_quali" and "Q" not in starts else "")
+                    act("missed", stage, f"cutoff {to_utc_text(cutoff)} passed with no live run{cause}")
             elif ready:
                 act("predict", stage, why)
 
@@ -293,7 +343,14 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             unscored = _unscored_runs(conn, event_id)
             if unscored:
                 act("score", "race", f"result is in; {unscored} logged run(s) not scored")
+            elif _scored_runs(conn, event_id):
+                # Every run is scored: but against the result as it is NOW?
+                scored_against = scored_snapshot(conn, event_id)
+                if scored_against != result_snapshot(conn, event_id):
+                    act("rescore", "race", "the official result changed after scoring"
+                        if scored_against is not None else "no record of the result it was scored against")
 
-    order = {"fetch_session": 0, "fetch_jolpica": 1, "predict": 2, "score": 3, "late": 4, "gave_up": 5, "missed": 6}
+    order = {"fetch_session": 0, "fetch_jolpica": 1, "predict": 2, "score": 3, "rescore": 3,
+             "late": 4, "gave_up": 5, "missed": 6}
     # sorted() is stable: within a kind, the calendar order above is kept.
     return sorted(actions, key=lambda a: order[a.kind])

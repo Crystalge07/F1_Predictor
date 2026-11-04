@@ -58,7 +58,9 @@ Post-quali finishing order (average places off): 2026 rounds 10+ 2.95 vs grid
 3.25 (+9.2%); 2025 3.37 vs grid 3.34 (−0.9%).
 
 Settings at freeze: 2026 weight 8 (every value from 1 to 12 was within 0.08
-places on calibration, so effectively arbitrary), DNF prior strength 80 and
+places on calibration, so effectively arbitrary; it applies to every season
+from 2026 on, so during the 2027 test 2026 and 2027 rows both count x8 and
+2027 is not weighted above 2026: decision 2026-11-04 in docs/PRD.md), DNF prior strength 80 and
 driver weight 0.75, post-quali grid weight 0.9 with noise 2.0, pre-weekend and
 practice anchor weight 0.25 with noise 4.0.
 
@@ -158,3 +160,81 @@ were made:
 Pre-weekend is unchanged (it uses none of the changed inputs). The Phase 4
 replay runs in the prediction log were made by the old code (their
 `model_version` says so) and were not re-run.
+
+## Architecture-review fixes (2026-11-03, branch `fix/architecture-review`)
+
+### The predicted order now follows the odds
+
+`predicted_rank` used to be the position model's raw order, while the win /
+podium / points chances come from the simulator, which blends that order
+with the stage's anchor (90% grid after qualifying). The two could disagree:
+in 5 of 19 post-quali replay runs (3 of 19 practice) the driver ranked 1st
+was not the favourite to win. 2026 R2: Russell ranked 1st at 31% to win,
+Antonelli 5th at 40% (he was on pole).
+
+From this date `predicted_rank` is the simulator's order: drivers sorted by
+the blended score the Monte Carlo starts from (`predict/stage.py`). The
+raw model order is still recoverable from the stored `expected_position`
+(`predict/stage.model_order`). On the 58 runs logged up to then (in-sample):
+
+| Stage | Ranked 1st = favourite (old → new) | Podium-chance contradictions > 5 pts | Places off (old → new) |
+| --- | --- | --- | --- |
+| Pre-weekend | 20/20 → 20/20 | 4 → 0 | 3.719 → 3.720 |
+| Practice | 16/19 → 19/19 | 2 → 0 | 3.651 → 3.651 |
+| Post-quali | 14/19 → 19/19 | 65 → 0 | 3.469 → 3.440 |
+
+**What this changes in scoring.** Places off and Spearman are scored on
+`predicted_rank`, so from now on they measure the order the dashboard
+shows. Runs already in the log keep the old meaning (the log can't be
+edited): the 2026 backtest and the first rehearsal run (run 58, 2026 R20
+pre-weekend; at that stage the two orders almost always agree). Every 2027
+live run uses the new definition. The held-out "places off" numbers above
+were measured on the model's raw order and are not re-stated. The win and
+podium probabilities, and so every Brier number, are unchanged.
+
+### Library versions are part of the frozen model
+
+The model is retrained for every prediction, but the pipeline used to
+install the newest XGBoost / pandas / NumPy on every hourly run (only lower
+bounds in `pyproject.toml`). A library release could have changed the
+"frozen" model mid-season while `model_version` still claimed the same
+commit and settings. Now:
+
+* `requirements.lock` pins every package to the version the tests passed on
+  (`scripts/lock_requirements.py`); the workflow installs with
+  `pip install -e . -c requirements.lock`;
+* `model_version` ends with the model libraries' versions
+  (`+xgboost-3.2.0+pandas-2.3.3+...`, `f1predictor/environment.py`);
+* a live run is refused if those differ from the lock, like a run from
+  uncommitted code.
+
+Upgrading a library is a deliberate change, made between seasons with the
+same care as a settings change.
+
+### Held-out numbers through the as-of path
+
+The held-out tables above come from the evaluation scripts, which build the
+test race's rows from its RESULT (who actually started, the official grid
+after penalties). A live prediction can't know those: it uses the as-of
+rows (`features/as_of.py`: last race's lineup, practice entries, OpenF1's
+starting grid). Only the 2026 replay used the as-of path, so the held-out
+numbers were slightly optimistic in a way nobody had measured.
+
+Measured 2026-11-03: the same 34 held-out races (2025 + 2026 rounds 10+),
+every stage predicted strictly as of its cutoff with `predict_stage`
+(`scripts/replay_season.py --db <copy> --season 2025`, then `--season 2026
+--rounds 10 99`), scored by the scorer against an as-of baseline (the run's
+own anchor order and slot rates). Frozen settings, code after the fixes
+above. One look; nothing was chosen from it.
+
+| Stage | Win Brier (result-based → as-of) | Podium Brier | Places off (as-of) |
+| --- | --- | --- | --- |
+| Pre-weekend | +7.7% → +7.8% | +2.7% → +2.1% | +4.6% |
+| Practice | +9.2% → +9.1% | +17.9% → +17.8% | +6.3% |
+| Post-quali | −1.4% → −1.3% | +2.8% → +2.9% | +0.3% |
+
+The probabilities hold up: no stage moves by more than 0.6 points, so
+feeding the model result-based rows was not inflating the held-out Brier
+numbers. Places off isn't comparable with the earlier column: it is now
+scored on the simulator's order (the change above) against the as-of
+baseline, so after qualifying it is close to the as-of grid by design.

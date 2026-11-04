@@ -4,6 +4,9 @@ Usage (from the repo root, with the virtual environment active):
     python scripts/replay_season.py                 (2026, every stage; ~5 minutes)
     python scripts/replay_season.py --season 2026 --rounds 10 19
     python scripts/replay_season.py --summary-only  (just print the totals again)
+    python scripts/replay_season.py --db /tmp/copy.sqlite --season 2025
+                                                    (a COPY of the database: e.g. the
+                                                    held-out replay, docs/evaluation-protocol.md)
 
 For every race of the season that has a result, in calendar order, and every
 stage (pre-weekend, practice, post-quali):
@@ -27,6 +30,7 @@ import argparse
 import time
 
 from f1predictor.db.connection import get_connection, init_db
+from f1predictor.evaluate.splits import LAST_CALIBRATION_ROUND
 from f1predictor.evaluate.scorer import scorecard_label, score_runs, summary
 from f1predictor.features.as_of import STAGES
 from f1predictor.predict.stage import model_version, predict_stage
@@ -97,11 +101,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--season", type=int, default=2026)
     parser.add_argument("--rounds", type=int, nargs=2, metavar=("FIRST", "LAST"), default=(1, 99))
+    parser.add_argument("--db", default=None,
+                        help="database file to replay into (default: data/f1.sqlite); use a copy "
+                             "to keep the main database's backtest runs as they are")
     parser.add_argument("--summary-only", action="store_true",
                         help="don't predict anything, just print the totals of the logged runs")
     args = parser.parse_args()
 
-    conn = get_connection()
+    conn = get_connection(args.db) if args.db else get_connection()
     try:
         init_db(conn)   # make sure the log tables (and any added columns) exist
         if not args.summary_only:
@@ -134,8 +141,9 @@ def main() -> None:
         if args.season == 2026 and tuple(args.rounds) == (1, 99):
             # The same split as the evaluation protocol, for comparison with
             # the frozen numbers (both parts are in-sample here).
-            print_summary(conn, 2026, "2026 rounds 1-9 (the races that chose the settings)", rounds=(1, 9))
-            print_summary(conn, 2026, "2026 rounds 10+ (held out, but looked at often)", rounds=(10, 99))
+            last = LAST_CALIBRATION_ROUND     # the protocol's split (evaluate/splits.py)
+            print_summary(conn, 2026, f"2026 rounds 1-{last} (the races that chose the settings)", rounds=(1, last))
+            print_summary(conn, 2026, f"2026 rounds {last + 1}+ (held out, but looked at often)", rounds=(last + 1, 99))
         # Live runs of the same season, if any, as their own scorecard (never
         # mixed with the backtest numbers above).
         if not summary(conn, args.season, mode="live").empty:

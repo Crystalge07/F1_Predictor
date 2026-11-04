@@ -306,6 +306,115 @@ def match_sessions(conn: sqlite3.Connection, season: int, openf1_sessions: list[
     return matched
 
 
+def _match_driver(conn: sqlite3.Connection, session: sqlite3.Row, session_id: int,
+                  entry: sqlite3.Row) -> dict[str, Any]:
+    """Pass 1 of match_entries: driver rules 1-5 for ONE car (see its docstring).
+
+    Returns {"driver_id", "constructor_id", "exact"}. constructor_id is only
+    set by rules 1 and 3 (both name the team); otherwise None, for pass 2.
+    exact = matched by rule 1 (a result at this event), so its team can be
+    taught to teammates in pass 2.
+    """
+    # Rule 1: the car number in a race/sprint result at this event.
+    same_event = conn.execute(
+        """
+        SELECT r.driver_id, r.constructor_id
+        FROM results r JOIN sessions s ON s.session_id = r.session_id
+        WHERE s.event_id = ? AND r.car_number = ?
+        -- Prefer the race result over the sprint result (they agree anyway).
+        ORDER BY CASE s.session_type WHEN 'R' THEN 0 ELSE 1 END
+        LIMIT 1
+        """,
+        (session["event_id"], entry["car_number"]),
+    ).fetchone()
+    if same_event is not None:
+        return {"driver_id": same_event["driver_id"], "constructor_id": same_event["constructor_id"],
+                "exact": True}   # safe to copy to teammates
+
+    if not entry["acronym"]:
+        # Rule 2: the same car in another session of this weekend.
+        same_car = conn.execute(
+            """
+            SELECT se.driver_id FROM session_entries se
+            JOIN sessions s ON s.session_id = se.session_id
+            WHERE s.event_id = ? AND se.car_number = ? AND se.session_id <> ?
+              AND se.driver_id IS NOT NULL
+            LIMIT 1
+            """,
+            (session["event_id"], entry["car_number"], session_id),
+        ).fetchone()
+        return {"driver_id": same_car["driver_id"] if same_car else None,
+                "constructor_id": None, "exact": False}   # team: pass 2
+
+    # Rule 3: a driver who qualified at this event under this acronym.
+    qualified = conn.execute(
+        """
+        SELECT q.driver_id, q.constructor_id FROM qualifying q
+        JOIN drivers d ON d.driver_id = q.driver_id
+        JOIN sessions s ON s.session_id = q.session_id
+        WHERE s.event_id = ? AND d.code = ?
+        LIMIT 1
+        """,
+        (session["event_id"], entry["acronym"]),
+    ).fetchone()
+    if qualified is not None:
+        return {"driver_id": qualified["driver_id"], "constructor_id": qualified["constructor_id"],
+                "exact": False}   # by acronym, so don't teach teammates from it
+
+    # Rule 4: the acronym's most recent race driver up to this season.
+    # Acronyms are unique among a season's race drivers, and we take the most
+    # recent use, so an old driver with the same code can't win.
+    by_acronym = conn.execute(
+        """
+        SELECT d.driver_id
+        FROM drivers d
+        JOIN results r ON r.driver_id = d.driver_id
+        JOIN sessions s ON s.session_id = r.session_id
+        JOIN events e ON e.event_id = s.event_id
+        WHERE d.code = ? AND e.season <= ?
+        ORDER BY e.season DESC, e.round DESC
+        LIMIT 1
+        """,
+        (entry["acronym"], session["season"]),
+    ).fetchone()
+    # Rule 5: nobody (driver_id None).
+    return {"driver_id": by_acronym["driver_id"] if by_acronym else None,
+            "constructor_id": None, "exact": False}   # team: pass 2
+
+
+def _fill_in_teams(conn: sqlite3.Connection, session: sqlite3.Row, entries: list[sqlite3.Row],
+                   resolved: dict[int, dict[str, Any]]) -> None:
+    """Pass 2 of match_entries: team rules 2-4 for cars whose team is still
+    unknown (changes `resolved` in place; see match_entries' docstring)."""
+    # Map OpenF1 team_name -> constructor_id, learned from exact matches.
+    team_by_name: dict[str, str] = {}
+    for entry in entries:
+        match = resolved[entry["car_number"]]
+        if match["exact"] and entry["team_name"]:
+            team_by_name[entry["team_name"]] = match["constructor_id"]
+
+    for entry in entries:
+        match = resolved[entry["car_number"]]
+        if match["exact"] or match["constructor_id"] is not None:   # team already known
+            continue
+        constructor_id = team_by_name.get(entry["team_name"])   # teammate rule
+        if constructor_id is None and match["driver_id"] is not None:
+            latest = conn.execute(
+                """
+                SELECT r.constructor_id
+                FROM results r
+                JOIN sessions s ON s.session_id = r.session_id
+                JOIN events e ON e.event_id = s.event_id
+                WHERE r.driver_id = ? AND e.season <= ?
+                ORDER BY e.season DESC, e.round DESC
+                LIMIT 1
+                """,
+                (match["driver_id"], session["season"]),
+            ).fetchone()
+            constructor_id = latest["constructor_id"] if latest else None
+        match["constructor_id"] = constructor_id
+
+
 def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
     """Fill in driver_id / constructor_id for every car in a session.
 
@@ -349,121 +458,12 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
         (session_id,),
     ).fetchall()
 
-    # Pass 1: work out each car's driver (and team, when rule 1 applies).
+    # Pass 1: work out each car's driver (and team, when rule 1 or 3 applies).
     # Stored in a dict first, then written, so pass 2 can look at teammates.
     # {car_number: {"driver_id": ..., "constructor_id": ..., "exact": bool}}
-    resolved: dict[int, dict[str, Any]] = {}
-    for entry in entries:
-        same_event = conn.execute(
-            """
-            SELECT r.driver_id, r.constructor_id
-            FROM results r JOIN sessions s ON s.session_id = r.session_id
-            WHERE s.event_id = ? AND r.car_number = ?
-            -- Prefer the race result over the sprint result (they agree anyway).
-            ORDER BY CASE s.session_type WHEN 'R' THEN 0 ELSE 1 END
-            LIMIT 1
-            """,
-            (session["event_id"], entry["car_number"]),
-        ).fetchone()
-
-        if same_event is not None:
-            resolved[entry["car_number"]] = {
-                "driver_id": same_event["driver_id"],
-                "constructor_id": same_event["constructor_id"],
-                "exact": True,  # matched by rule 1: safe to copy to teammates
-            }
-            continue
-
-        if not entry["acronym"]:
-            # Rule 2: the same car in another session of this weekend.
-            same_car = conn.execute(
-                """
-                SELECT se.driver_id FROM session_entries se
-                JOIN sessions s ON s.session_id = se.session_id
-                WHERE s.event_id = ? AND se.car_number = ? AND se.session_id <> ?
-                  AND se.driver_id IS NOT NULL
-                LIMIT 1
-                """,
-                (session["event_id"], entry["car_number"], session_id),
-            ).fetchone()
-            resolved[entry["car_number"]] = {
-                "driver_id": same_car["driver_id"] if same_car else None,
-                "constructor_id": None,  # decided in pass 2
-                "exact": False,
-            }
-            continue
-
-        # Rule 3: a driver who qualified at this event under this acronym.
-        qualified = conn.execute(
-            """
-            SELECT q.driver_id, q.constructor_id FROM qualifying q
-            JOIN drivers d ON d.driver_id = q.driver_id
-            JOIN sessions s ON s.session_id = q.session_id
-            WHERE s.event_id = ? AND d.code = ?
-            LIMIT 1
-            """,
-            (session["event_id"], entry["acronym"]),
-        ).fetchone()
-        if qualified is not None:
-            resolved[entry["car_number"]] = {
-                "driver_id": qualified["driver_id"],
-                "constructor_id": qualified["constructor_id"],
-                "exact": False,  # by acronym, so don't teach teammates from it
-            }
-            continue
-
-        by_acronym = None
-        if entry["acronym"]:
-            # Acronyms are unique among a season's race drivers, and we take
-            # the most recent use, so an old driver with the same code can't win.
-            by_acronym = conn.execute(
-                """
-                SELECT d.driver_id
-                FROM drivers d
-                JOIN results r ON r.driver_id = d.driver_id
-                JOIN sessions s ON s.session_id = r.session_id
-                JOIN events e ON e.event_id = s.event_id
-                WHERE d.code = ? AND e.season <= ?
-                ORDER BY e.season DESC, e.round DESC
-                LIMIT 1
-                """,
-                (entry["acronym"], session["season"]),
-            ).fetchone()
-
-        resolved[entry["car_number"]] = {
-            "driver_id": by_acronym["driver_id"] if by_acronym else None,
-            "constructor_id": None,  # decided in pass 2
-            "exact": False,
-        }
-
-    # Pass 2: teams for cars not matched exactly.
-    # Map OpenF1 team_name -> constructor_id, learned from exact matches.
-    team_by_name: dict[str, str] = {}
-    for entry in entries:
-        match = resolved[entry["car_number"]]
-        if match["exact"] and entry["team_name"]:
-            team_by_name[entry["team_name"]] = match["constructor_id"]
-
-    for entry in entries:
-        match = resolved[entry["car_number"]]
-        if match["exact"] or match["constructor_id"] is not None:   # team already known
-            continue
-        constructor_id = team_by_name.get(entry["team_name"])   # teammate rule
-        if constructor_id is None and match["driver_id"] is not None:
-            latest = conn.execute(
-                """
-                SELECT r.constructor_id
-                FROM results r
-                JOIN sessions s ON s.session_id = r.session_id
-                JOIN events e ON e.event_id = s.event_id
-                WHERE r.driver_id = ? AND e.season <= ?
-                ORDER BY e.season DESC, e.round DESC
-                LIMIT 1
-                """,
-                (match["driver_id"], session["season"]),
-            ).fetchone()
-            constructor_id = latest["constructor_id"] if latest else None
-        match["constructor_id"] = constructor_id
+    resolved = {entry["car_number"]: _match_driver(conn, session, session_id, entry) for entry in entries}
+    # Pass 2: teams for the cars not matched exactly.
+    _fill_in_teams(conn, session, entries, resolved)
 
     # Write everything back.
     for car_number, match in resolved.items():

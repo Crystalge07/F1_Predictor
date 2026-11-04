@@ -22,7 +22,7 @@ def record(
     """Record the outcome of fetching one item, replacing any earlier attempt.
 
     Args:
-        source: 'jolpica' or 'fastf1'.
+        source: 'jolpica' or 'openf1'.
         item_key: A readable id for what was fetched, e.g. '2024-results'.
         status: 'ok', 'failed' or 'skipped' (the schema rejects anything else).
         row_count: Rows written, as a sanity number.

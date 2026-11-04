@@ -41,6 +41,7 @@ Scores can be rewritten: re-scoring a run (e.g. after the FIA changes a
 result) replaces its rows. The prediction being scored never changes.
 """
 
+import json
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -237,6 +238,52 @@ def score_runs(conn: sqlite3.Connection, run_ids: list[int] | None = None,
         if result is not None:
             scored[run_id] = result
     return scored
+
+
+# -----------------------------------------------------------------------------
+# Which result a race was scored against (results revised after scoring)
+# -----------------------------------------------------------------------------
+
+def result_snapshot(conn: sqlite3.Connection, event_id: int) -> str:
+    """The race's official result as stable text: {driver_id: [position, position_text]}.
+
+    JSON with sorted keys, so the same result always gives the same text and
+    a changed one (a driver disqualified, places swapped by a time penalty)
+    gives a different text. '{}' if there's no result yet.
+    """
+    rows = conn.execute(
+        "SELECT r.driver_id, r.position, r.position_text FROM results r "
+        "JOIN sessions s ON s.session_id = r.session_id AND s.session_type = 'R' "
+        "WHERE s.event_id = ?", (event_id,)).fetchall()
+    return json.dumps({row[0]: [row[1], row[2]] for row in rows}, sort_keys=True)
+
+
+def scored_snapshot(conn: sqlite3.Connection, event_id: int) -> str | None:
+    """The result the race's runs were last scored against (None = no record)."""
+    row = conn.execute("SELECT result_json FROM scored_results WHERE event_id = ?", (event_id,)).fetchone()
+    return None if row is None else row[0]
+
+
+def record_scored_snapshot(conn: sqlite3.Connection, event_id: int, snapshot: str) -> None:
+    """Remember that the race's runs are now scored against `snapshot`."""
+    with conn:
+        conn.execute(
+            "INSERT INTO scored_results (event_id, result_json, scored_at_utc) VALUES (?, ?, ?) "
+            "ON CONFLICT (event_id) DO UPDATE SET result_json = excluded.result_json, "
+            "scored_at_utc = excluded.scored_at_utc",
+            (event_id, snapshot, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+
+
+def result_changes(old: str, new: str) -> list[str]:
+    """What changed between two snapshots, readably: ['russell: 1 -> D', 'hamilton: 2 -> 1']."""
+    before, after = json.loads(old), json.loads(new)
+    changes = []
+    for driver in sorted(set(before) | set(after)):
+        a, b = before.get(driver), after.get(driver)
+        if a != b:
+            show = lambda entry: "absent" if entry is None else str(entry[1])   # position_text
+            changes.append(f"{driver}: {show(a)} -> {show(b)}")
+    return changes
 
 
 # -----------------------------------------------------------------------------

@@ -200,7 +200,9 @@ class FakeF1:
         elif parts[1] == "qualifying":
             races = [dict(self._schedule_race(season, rnd), QualifyingResults=self._qualifying(season, rnd))
                      for rnd in range(1, len(CALENDAR[season]) + 1)
-                     if season < 2027 or self._published(season, rnd, "Q")]
+                     # A cancelled qualifying has no results, like the real API.
+                     if (season, rnd, "Q") not in self.cancelled
+                     and (season < 2027 or self._published(season, rnd, "Q"))]
         elif parts[1] == "sprint":
             races = [dict(self._schedule_race(season, rnd), SprintResults=self._sprint_results(season, rnd))
                      for rnd in range(1, len(CALENDAR[season]) + 1)
