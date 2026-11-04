@@ -28,6 +28,20 @@ def test_sample_weights_upweight_2026():
     assert sample_weights(df, 3.0).tolist() == [1.0, 1.0, 3.0]
 
 
+def test_2027_rows_weigh_the_same_as_2026_rows():
+    # Decision 2026-11-04 (docs/PRD.md, "Decisions made"): the extra weight
+    # belongs to the regulation ERA that started in 2026, not to "the latest
+    # season". So in 2027, 2026 and 2027 rows both count x8 and pre-2026 rows
+    # x1. Why: the settings stay frozen for the 2027 test (the split between
+    # 2026 and 2027 can't be tuned without 2027 data), and every weight from
+    # 1 to 12 scored within 0.08 places anyway. Revisit after 2027.
+    # Pinned so that a change (e.g. favouring the newest season) is deliberate.
+    from f1predictor.models.position import WEIGHT_2026
+    assert WEIGHT_2026 == 8.0                       # the frozen value (tuned_settings.json)
+    df = pd.DataFrame({"season": [2025, 2026, 2027, 2028]})
+    assert sample_weights(df, WEIGHT_2026).tolist() == [1.0, 8.0, 8.0, 8.0]
+
+
 def test_model_learns_grid_order():
     df = fake_features([(i, 2024, f"2024-{i:02d}-01") for i in range(1, 11)])
     model = train_model(df)
