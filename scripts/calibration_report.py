@@ -22,6 +22,7 @@ import pandas as pd
 
 from f1predictor.db.connection import get_connection
 from f1predictor.evaluate.calibration import PODIUM_EDGES, WIN_EDGES, calibration_table
+from f1predictor.evaluate.splits import split_races
 from f1predictor.evaluate.walk_forward import walk_forward
 from f1predictor.features.race_features import build_race_features
 from f1predictor.features.stages import STAGE_FEATURES
@@ -30,7 +31,6 @@ from f1predictor.models.dnf import add_dnf_probability
 from f1predictor.models.position import WEIGHT_2026, predict_positions, train_model
 from f1predictor.simulate.probabilities import STAGE_SETTINGS, race_probabilities
 
-LAST_CALIBRATION_ROUND_2026 = 9      # as in scripts/evaluate_stage_probabilities.py
 
 
 def print_tables(title: str, rows: pd.DataFrame) -> None:
@@ -50,9 +50,7 @@ def print_tables(title: str, rows: pd.DataFrame) -> None:
 def held_out(conn) -> None:
     features = add_baseline_ranks(build_race_features(conn))
     dnf = add_dnf_probability(features)[["session_id", "driver_id", "dnf_prob"]]
-    sessions = features[["session_id", "season", "round"]].drop_duplicates()
-    late_2026 = (sessions.season == 2026) & (sessions["round"] > LAST_CALIBRATION_ROUND_2026)
-    test_ids = sessions[(sessions.season == 2025) | late_2026].session_id.tolist()
+    _calibration, test_ids = split_races(features)   # the protocol's held-out races (evaluate/splits.py)
 
     for stage, columns in STAGE_FEATURES.items():
         anchor, weight, noise_sd = STAGE_SETTINGS[stage]
