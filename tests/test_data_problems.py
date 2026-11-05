@@ -307,3 +307,28 @@ def test_a_cancelled_qualifying_still_gets_a_practice_prediction_and_says_why_po
     assert paced == 20
     # And both logged runs are scored once the result is in.
     assert scored_runs(conn) == 2
+
+
+# -----------------------------------------------------------------------------
+# A grid change accepted by rule (not by a person): saved, but alerted once
+# -----------------------------------------------------------------------------
+
+def test_accepted_pit_lane_shrink_is_alerted_once(monkeypatch):
+    # The fetch step itself is faked: it "loads" the grid and leaves the
+    # warning ingest/openf1 records for an accepted pit-lane shrink.
+    conn = get_connection(":memory:")
+    init_db(conn)
+    detail = "Accepted as pit-lane start(s): car 3 (was 3) left the starting grid"
+
+    def fake_fetches(conn, actions, now, jolpica_client, openf1_client):
+        conn.execute("DELETE FROM validation_issues")
+        conn.execute("INSERT INTO validation_issues (source, item_key, check_name, severity, detail, "
+                     "found_at) VALUES ('openf1', '2027-01-grid', 'starting_grid_pit_lane_shrink', "
+                     "'warning', ?, '2027-03-14T09:00Z')", (detail,))
+        return {"2027-01-grid": "ok"}
+
+    monkeypatch.setattr(tick, "run_fetches", fake_fetches)
+    first = tick.run_tick(conn, now=START, jolpica_client=object(), openf1_client=object())
+    again = tick.run_tick(conn, now=START + HOUR, jolpica_client=object(), openf1_client=object())
+    assert first.new_alerts == [f"starting grid changed: 2027-01-grid: {detail}"]
+    assert again.new_alerts == []          # same change: not alerted again

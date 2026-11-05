@@ -36,6 +36,7 @@ def test_fetches_are_routed_to_the_loaders(monkeypatch):
     kwargs = openf1_calls[0][2]
     assert kwargs["rounds"] == {2} and kwargs["session_types"] == {"R", "Q"}   # grid -> Q
     assert kwargs["settle_hours"] == 0 and kwargs["now"] == NOW
+    assert kwargs["refresh_grid"] is True
     assert [c for c in calls if c[0] == "jolpica"] == [("jolpica", 2027)]      # once per season
 
 

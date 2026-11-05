@@ -90,8 +90,12 @@ def run_fetches(conn: sqlite3.Connection, actions: list[Action], now: datetime,
             by_round.setdefault((action.season, action.round), set()).add(session_type)
     for (season, rnd), session_types in sorted(by_round.items()):
         logger.info("OpenF1 %d round %d: %s", season, rnd, ", ".join(sorted(session_types)))
+        refresh_grid = any(
+            a.kind == "fetch_session" and a.season == season and a.round == rnd and a.target == "grid"
+            for a in actions)
         result = openf1.ingest_season(conn, openf1_client, season, rounds={rnd}, now=now,
-                                      session_types=session_types, settle_hours=0)
+                                      session_types=session_types, settle_hours=0,
+                                      refresh_grid=refresh_grid)
         outcomes.update(result)
 
     # New Jolpica results can identify cars OpenF1 listed only by number

@@ -55,6 +55,12 @@ MAX_LAPS_WITHOUT_STINT = 0.05
 # is ~63s). Anything quicker is a timing glitch.
 MIN_PLAUSIBLE_LAP_MS = 55_000
 
+# OpenF1 occasionally omits pit-lane starters from starting_grid altogether;
+# two missing cars are present in the historical data and are restored later
+# from qualifying. More than four missing cars is treated as a partial API
+# response rather than an implausibly large pit-lane contingent.
+MAX_STARTING_GRID_OMISSIONS = 4
+
 
 @dataclass
 class Issue:
@@ -276,6 +282,119 @@ def check_jolpica_part(conn: sqlite3.Connection, season: int, part: str) -> list
 # =============================================================================
 # OpenF1 checks
 # =============================================================================
+
+def grid_shrink_problem(old: dict[int, int], new: dict[int, int]) -> str | None:
+    """Why a refreshed grid with FEWER cars is not a clean pit-lane move (None = it is).
+
+    `old` and `new` map car number -> grid slot. OpenF1 leaves pit-lane
+    starters out of its grid, so a car moved to the pit lane after the first
+    fetch shows up as: that car gone, and every car that was behind it moved
+    up by one place per departed car ahead of it, nothing else changed.
+
+    Example, old {44: 1, 1: 2, 16: 3, 4: 4}, car 1 to the pit lane:
+        new {44: 1, 16: 2, 4: 3}  -> None (16 and 4 each moved up exactly 1)
+        new {44: 1, 4: 2, 16: 3}  -> problem (16 and 4 also swapped)
+    A car that was at the BACK has nobody behind it to move up, so "it went
+    to the pit lane" and "the response was cut short" look identical: that
+    case is a problem too, and the caller keeps the stored grid and alerts.
+    """
+    appeared = sorted(set(new) - set(old))
+    if appeared:
+        return f"car(s) {appeared} were not in the stored grid"
+    missing = sorted(set(old) - set(new), key=old.get)
+    # The slot of the last car still in the grid; a missing car behind it
+    # was at the back of the old grid.
+    last_remaining = max((old[car] for car in new), default=0)
+    at_back = [car for car in missing if old[car] > last_remaining]
+    if at_back:
+        return (f"car(s) {at_back} were at the back of the stored grid, where a pit-lane "
+                "move can't be told apart from a cut-short response")
+    # Where each remaining car must be: its old slot, minus one for every
+    # departed car that was ahead of it.
+    expected = {car: old[car] - sum(old[gone] < old[car] for gone in missing) for car in new}
+    moved = sorted(car for car in new if new[car] != expected[car])
+    if moved:
+        return f"other cars changed places as well: {moved}"
+    return None
+
+
+def check_starting_grid(conn: sqlite3.Connection, session_id: int,
+                        previous_grid: dict[int, int] | None = None) -> list[Issue]:
+    """The published grid is complete enough and has valid, unique slots.
+
+    `session_id` is qualifying. A few cars may legitimately be absent because
+    OpenF1 omits pit-lane starters; features/as_of.py restores those cars from
+    qualifying. A much smaller response is partial and must not unlock the
+    immutable post-quali prediction.
+
+    `previous_grid` is the grid stored before this load ({car: slot}; None or
+    empty on the first fetch). A refresh with FEWER cars is only accepted when
+    it is a clean pit-lane move (grid_shrink_problem): then a WARNING names
+    the cars, which the tick turns into an alert so a person can check it.
+    Any other shrink is an error, even within the omission allowance: the
+    allowance is for a grid's first appearance, not for letting a refresh
+    downgrade a fuller grid.
+
+    The slots must run 1..k with no gaps (k = slots stored). In the 88 grids
+    stored on 2026-11-04 every one does: omitted pit-lane starters are always
+    at the back, never holes in the middle.
+    """
+    issues: list[Issue] = []
+    grid = {row[0]: row[1] for row in conn.execute(
+        "SELECT car_number, position FROM starting_grid WHERE session_id = ?", (session_id,))}
+    positions = list(grid.values())
+    entries = conn.execute(
+        "SELECT COUNT(*) FROM session_entries WHERE session_id = ?", (session_id,)).fetchone()[0]
+
+    if not positions:
+        return issues  # not published yet: the loader records 'skipped' and retries
+
+    missing = entries - len(positions)
+    if missing > MAX_STARTING_GRID_OMISSIONS:
+        issues.append(Issue(
+            "starting_grid_incomplete", "error",
+            f"Starting grid has {len(positions)} of {entries} qualifying cars "
+            f"({missing} missing; at most {MAX_STARTING_GRID_OMISSIONS} may be pit-lane omissions)",
+            session_id))
+    if previous_grid and len(grid) < len(previous_grid):
+        problem = grid_shrink_problem(previous_grid, grid)
+        if problem:
+            issues.append(Issue(
+                "starting_grid_shrank", "error",
+                f"Refreshed starting grid has {len(grid)} cars, fewer than the "
+                f"{len(previous_grid)} stored, and isn't a clean pit-lane move: {problem}; "
+                "keeping the stored grid", session_id))
+        else:
+            gone = sorted(set(previous_grid) - set(grid), key=previous_grid.get)
+            slots = ", ".join(f"car {car} (was {previous_grid[car]})" for car in gone)
+            issues.append(Issue(
+                "starting_grid_pit_lane_shrink", "warning",
+                f"Accepted as pit-lane start(s): {slots} left the starting grid and the "
+                "cars behind moved up exactly; please check against the FIA documents",
+                session_id))
+    if any(position < 1 for position in positions):
+        issues.append(Issue("starting_grid_invalid_position", "error",
+                            f"Starting-grid positions must be positive: {sorted(positions)}",
+                            session_id))
+    too_far_back = sorted(p for p in positions if p > entries)
+    if too_far_back:
+        issues.append(Issue("starting_grid_position_too_large", "error",
+                            f"Starting-grid positions {too_far_back} are beyond the "
+                            f"{entries} cars that took part in qualifying", session_id))
+    duplicates = _duplicates(positions)
+    if duplicates:
+        issues.append(Issue("starting_grid_duplicate_positions", "error",
+                            f"Duplicate starting-grid positions: {duplicates}", session_id))
+    # Gaps: with k slots stored, every place 1..k must be taken. E.g. slots
+    # {1, 2, 4} -> place 3 is empty. (Duplicates also leave a place empty;
+    # both messages then appear, which is fine.)
+    empty_places = sorted(set(range(1, len(positions) + 1)) - set(positions))
+    if empty_places:
+        issues.append(Issue("starting_grid_gaps", "error",
+                            f"Starting grid has {len(positions)} cars but no car in "
+                            f"place(s) {empty_places}", session_id))
+    return issues
+
 
 def check_openf1_session(conn: sqlite3.Connection, session_id: int) -> list[Issue]:
     """A session's lap-level data is complete and plausible."""

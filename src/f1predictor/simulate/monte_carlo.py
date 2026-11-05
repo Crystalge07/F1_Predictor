@@ -88,10 +88,15 @@ def simulate_race(
 
     # Who retires in each simulated race: a uniform draw in [0, 1) below the
     # driver's DNF probability. E.g. dnf 0.1 -> True in about 10% of races.
-    retired = rng.random(size=(n_sims, n_drivers)) < dnf
-    # Retired drivers go behind every finisher. They keep their noisy score on
-    # top of the penalty, so retirees are still ordered among themselves.
-    scores = scores + retired * RETIRED_PENALTY
+    # In this project dnf_prob means "not classified" (position_text is not
+    # numeric), not merely "stopped before the flag": a late retiree who
+    # completes 90% remains classified and belongs in the False branch.
+    unclassified = rng.random(size=(n_sims, n_drivers)) < dnf
+    # Unclassified drivers go behind every classified finisher. They keep
+    # their noisy score on top of the penalty, so they are still ordered
+    # among themselves.
+    scores = scores + unclassified * RETIRED_PENALTY
+    classified = ~unclassified
 
     # Scores -> finishing positions. argsort twice is the standard trick:
     #   argsort(scores)       = which driver is 1st, 2nd, 3rd... (an ORDER)
@@ -102,10 +107,14 @@ def simulate_race(
     # Averaging a True/False array gives the share of True: that IS the probability.
     table = pd.DataFrame({
         "driver_id": driver_ids,
-        "p_win": (positions == 1).mean(axis=0),
-        "p_podium": (positions <= 3).mean(axis=0),
-        "p_points": (positions <= POINTS_POSITIONS).mean(axis=0),
-        "p_dnf": retired.mean(axis=0),
+        # An unclassified car can't win, take a podium or score, even when
+        # so few cars are classified that it lands in one of those places.
+        # The SAME mask on all three keeps p_win <= p_podium <= p_points.
+        # Classified late retirees (the 90% rule) are not masked.
+        "p_win": ((positions == 1) & classified).mean(axis=0),
+        "p_podium": ((positions <= 3) & classified).mean(axis=0),
+        "p_points": ((positions <= POINTS_POSITIONS) & classified).mean(axis=0),
+        "p_dnf": unclassified.mean(axis=0),
         "mean_position": positions.mean(axis=0),
     })
     return SimulationResult(table)

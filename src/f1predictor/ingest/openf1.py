@@ -620,7 +620,7 @@ def ingest_session(
 
 def load_starting_grid(
     conn: sqlite3.Connection, client: JsonHttpClient, session_id: int, session_key: int
-) -> int:
+) -> tuple[int, list[checks.Issue]]:
     """Fetch and store the starting grid for one QUALIFYING session.
 
     Kept separate from ingest_session because the grid can appear later than
@@ -628,7 +628,10 @@ def load_starting_grid(
     need fetching again on its own. Safe to re-run: the session's old grid is
     replaced in one transaction.
 
-    Returns the number of grid slots stored (0 = OpenF1 has no grid yet).
+    Returns (number of grid slots stored, warnings). 0 slots = OpenF1 has no
+    grid yet. The warnings (if any) go back to the caller, which records
+    them; today the only one is an accepted pit-lane shrink, which the tick
+    alerts on (validate/checks.grid_shrink_problem).
     """
     grid = fetch(client, "starting_grid", session_key=session_key)
     # Only cars that took part in qualifying (the foreign key would reject
@@ -638,11 +641,32 @@ def load_starting_grid(
     rows = [(session_id, slot["driver_number"], slot["position"])
             for slot in grid
             if slot.get("driver_number") in cars and slot.get("position") is not None]
+    # The grid we already hold for this session ({car: slot}; empty on the
+    # first fetch). Read BEFORE the replace below deletes it.
+    previous = {row[0]: row[1] for row in conn.execute(
+        "SELECT car_number, position FROM starting_grid WHERE session_id = ?", (session_id,))}
+    stored = len(previous)
+    if not rows:
+        # Nothing usable came back. Before any grid is stored that just means
+        # "not published yet" (0 -> the caller logs 'skipped' and retries).
+        # On a REFRESH it's an API hiccup, not OpenF1 withdrawing the grid:
+        # keep the stored grid untouched and report its size, so the caller
+        # logs 'ok' again and the planner still sees the grid as available.
+        # (Before 2026-11-04 this path deleted the stored grid.)
+        if stored:
+            logger.warning("Session %d: empty starting-grid refresh; keeping the %d stored slots",
+                           session_id, stored)
+        return stored, []
     with conn:
         conn.execute("DELETE FROM starting_grid WHERE session_id = ?", (session_id,))
         conn.executemany(
             "INSERT INTO starting_grid (session_id, car_number, position) VALUES (?, ?, ?)", rows)
-    return len(rows)
+        # Validate inside the transaction: an error rolls back the DELETE
+        # too, so the previous grid survives. previous_grid lets the check
+        # tell a clean pit-lane move from a refresh that lost cars.
+        issues = checks.check_starting_grid(conn, session_id, previous_grid=previous)
+        checks.raise_if_errors(issues)
+    return len(rows), issues
 
 
 # =============================================================================
@@ -658,6 +682,7 @@ def ingest_season(
     now: datetime | None = None,
     session_types: set[str] | None = None,
     settle_hours: float = SESSION_SETTLE_HOURS,
+    refresh_grid: bool = False,
 ) -> dict[str, str]:
     """Load all finished sessions of a season from OpenF1, logging each one.
 
@@ -675,6 +700,10 @@ def ingest_season(
         settle_hours: How long after a session STARTED it counts as finished.
             The backfill uses the safe default; the pipeline passes 0, since its
             planner already waited for each session's end (by session type).
+        refresh_grid: Re-fetch a qualifying session's starting grid even if a
+            previous attempt was successful. The live pipeline uses this
+            immediately before its immutable post-quali prediction, so a
+            penalty published since the first fetch is not missed.
 
     Returns:
         {item_key: status}, e.g. {'2024-24-FP1': 'ok', ...}
@@ -719,19 +748,24 @@ def ingest_season(
         # session itself loaded, since the grid hangs off its entries.
         if session.session_type == "Q" and outcomes[session.item_key] in ("ok", "already done"):
             grid_key = f"{session.item_key[:-2]}-grid"     # '2024-24-Q' -> '2024-24-grid'
-            if skip_done and ingestion_log.is_done(conn, SOURCE, grid_key):
+            if skip_done and not refresh_grid and ingestion_log.is_done(conn, SOURCE, grid_key):
                 outcomes[grid_key] = "already done"
                 continue
             try:
-                slots = load_starting_grid(conn, client, session.session_id, session.session_key)
+                slots, grid_issues = load_starting_grid(conn, client, session.session_id,
+                                                        session.session_key)
             except Exception as exc:
                 logger.error("OpenF1 %s failed: %s", grid_key, exc)
                 ingestion_log.record(conn, SOURCE, grid_key, "failed", message=str(exc))
+                checks.record_issues(conn, SOURCE, grid_key, getattr(exc, "issues", []))
                 outcomes[grid_key] = "failed"
                 continue
             # 0 slots = not published yet: 'skipped', so it's tried again later.
             status = "ok" if slots else "skipped"
             ingestion_log.record(conn, SOURCE, grid_key, status, row_count=slots)
+            # Warnings only (an error would have raised above), e.g. an
+            # accepted pit-lane shrink; empty clears the item's old issues.
+            checks.record_issues(conn, SOURCE, grid_key, grid_issues)
             outcomes[grid_key] = status
 
     return outcomes

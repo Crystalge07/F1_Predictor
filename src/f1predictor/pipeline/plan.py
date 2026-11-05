@@ -270,9 +270,18 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
         # The starting grid: published after qualifying (penalties can change
         # it), so it's fetched on its own once qualifying is in, and retried
         # every tick until it appears or the race starts.
+        # Refresh the grid immediately before the one immutable post-quali
+        # prediction. An earlier successful fetch may pre-date a grid penalty;
+        # treating ingestion_log='ok' as permanent would then freeze stale
+        # slots into the live run. Once the run exists it is intentionally
+        # frozen and there is no reason to keep polling.
         if ("Q" in starts and "R" in starts and now < starts["R"]
-                and _openf1_done(conn, season, rnd, "Q") and not _openf1_done(conn, season, rnd, "grid")):
-            act("fetch_session", "grid", "qualifying is in; starting grid not published yet")
+                and _openf1_done(conn, season, rnd, "Q")
+                and not _live_run_exists(conn, event_id, "post_quali")):
+            reason = ("qualifying is in; refreshing starting grid before prediction"
+                      if _openf1_done(conn, season, rnd, "grid")
+                      else "qualifying is in; starting grid not published yet")
+            act("fetch_session", "grid", reason)
         # Jolpica parts: (session, table its rows land in, part name). Sprint
         # results live in `results` under the sprint session (ingest/jolpica.py).
         for session_type, table, part in [("Q", "qualifying", "qualifying"), ("S", "results", "sprint"),

@@ -10,7 +10,9 @@ import pytest
 import requests
 
 from f1predictor.db.connection import get_connection, init_db
+from f1predictor.db import ingestion_log
 from f1predictor.ingest import openf1
+from f1predictor.validate import checks
 
 
 # -----------------------------------------------------------------------------
@@ -393,10 +395,10 @@ def test_load_starting_grid_keeps_known_cars_and_replaces_old_grid(conn):
     ]
     client = FakeClient({("starting_grid", 77): grid})
 
-    assert openf1.load_starting_grid(conn, client, quali, 77) == 2
+    assert openf1.load_starting_grid(conn, client, quali, 77)[0] == 2
     # Running again (e.g. after a late penalty) replaces, never duplicates.
     grid[0]["position"], grid[1]["position"] = 2, 1
-    assert openf1.load_starting_grid(conn, client, quali, 77) == 2
+    assert openf1.load_starting_grid(conn, client, quali, 77)[0] == 2
 
     rows = conn.execute("SELECT car_number, position FROM starting_grid ORDER BY position").fetchall()
     assert [tuple(r) for r in rows] == [(4, 1), (16, 2)]
@@ -406,7 +408,160 @@ def test_missing_starting_grid_stores_nothing(conn):
     # OpenF1 answers 404 until the grid is published: that's 0 slots, not an error.
     event_id = add_event(conn, 2024, 24, "2024-12-08")
     quali = add_session(conn, event_id, "Q")
-    assert openf1.load_starting_grid(conn, FakeClient({}), quali, 77) == 0
+    assert openf1.load_starting_grid(conn, FakeClient({}), quali, 77)[0] == 0
+
+
+def test_partial_starting_grid_is_rejected_and_keeps_the_last_good_grid(conn):
+    event_id = add_event(conn, 2024, 24, "2024-12-08")
+    quali = add_session(conn, event_id, "Q")
+    conn.executemany("INSERT INTO session_entries (session_id, car_number) VALUES (?, ?)",
+                     [(quali, car) for car in range(1, 7)])
+    complete = [{"position": car, "driver_number": car, "session_key": 77}
+                for car in range(1, 7)]
+    client = FakeClient({("starting_grid", 77): complete})
+    assert openf1.load_starting_grid(conn, client, quali, 77)[0] == 6
+
+    # A one-row refresh is an incomplete API response, not five pit-lane
+    # starters. Validation runs in the replacement transaction, so the last
+    # complete grid remains available for a later retry.
+    client.responses[("starting_grid", 77)] = complete[:1]
+    with pytest.raises(checks.ValidationError, match="starting_grid_incomplete"):
+        openf1.load_starting_grid(conn, client, quali, 77)
+    rows = conn.execute(
+        "SELECT car_number, position FROM starting_grid WHERE session_id = ? ORDER BY position",
+        (quali,)).fetchall()
+    assert [tuple(row) for row in rows] == [(car, car) for car in range(1, 7)]
+
+
+def six_car_grid(conn):
+    """A qualifying session with cars 1-6 and a complete grid stored (1..6)."""
+    event_id = add_event(conn, 2024, 24, "2024-12-08")
+    quali = add_session(conn, event_id, "Q")
+    conn.executemany("INSERT INTO session_entries (session_id, car_number) VALUES (?, ?)",
+                     [(quali, car) for car in range(1, 7)])
+    complete = [{"position": car, "driver_number": car, "session_key": 77} for car in range(1, 7)]
+    client = FakeClient({("starting_grid", 77): complete})
+    assert openf1.load_starting_grid(conn, client, quali, 77)[0] == 6
+    return quali, client, complete
+
+
+def stored_grid(conn, quali):
+    return [tuple(row) for row in conn.execute(
+        "SELECT car_number, position FROM starting_grid WHERE session_id = ? ORDER BY position",
+        (quali,))]
+
+
+def test_empty_refresh_keeps_the_stored_grid(conn):
+    # A refresh that comes back empty (404 / blip) must not wipe a good grid.
+    # It reports the stored size, so ingest_season logs 'ok' again and the
+    # planner keeps treating the grid as available.
+    quali, client, _ = six_car_grid(conn)
+    del client.responses[("starting_grid", 77)]
+    assert openf1.load_starting_grid(conn, client, quali, 77)[0] == 6
+    assert stored_grid(conn, quali) == [(car, car) for car in range(1, 7)]
+
+
+def refresh_with(conn, client, quali, car_slots: dict[int, int]):
+    """Refresh the stored six-car grid with OpenF1 now answering {car: slot}."""
+    client.responses[("starting_grid", 77)] = [
+        {"position": slot, "driver_number": car, "session_key": 77} for car, slot in car_slots.items()]
+    return openf1.load_starting_grid(conn, client, quali, 77)
+
+
+def test_mid_grid_pit_lane_move_is_accepted_and_flagged(conn):
+    # Car 3 moves to the pit lane after the first fetch: OpenF1 drops it and
+    # cars 4, 5, 6 each move up exactly one place. Accepted, with a warning
+    # naming the car (the tick turns it into an alert).
+    quali, client, _ = six_car_grid(conn)
+    slots, issues = refresh_with(conn, client, quali, {1: 1, 2: 2, 4: 3, 5: 4, 6: 5})
+    assert slots == 5
+    assert stored_grid(conn, quali) == [(1, 1), (2, 2), (4, 3), (5, 4), (6, 5)]
+    assert [(i.check, i.severity) for i in issues] == [("starting_grid_pit_lane_shrink", "warning")]
+    assert "car 3 (was 3)" in issues[0].detail
+
+
+def test_truncated_tail_is_rejected(conn):
+    # Cars 5 and 6 missing, nothing else changed: a response cut short.
+    quali, client, complete = six_car_grid(conn)
+    with pytest.raises(checks.ValidationError, match="starting_grid_shrank.*at the back"):
+        refresh_with(conn, client, quali, {1: 1, 2: 2, 3: 3, 4: 4})
+    assert stored_grid(conn, quali) == [(car, car) for car in range(1, 7)]
+
+
+def test_back_of_grid_car_makes_a_shrink_ambiguous(conn):
+    # Car 2 (mid-grid) left cleanly, but car 6 was LAST: nobody behind it to
+    # move up, so "pit lane" and "cut short" look the same. One ambiguous car
+    # is enough to reject the whole refresh.
+    quali, client, _ = six_car_grid(conn)
+    with pytest.raises(checks.ValidationError, match=r"car\(s\) \[6\] were at the back"):
+        refresh_with(conn, client, quali, {1: 1, 3: 2, 4: 3, 5: 4})
+    assert stored_grid(conn, quali) == [(car, car) for car in range(1, 7)]
+
+
+def test_shrink_with_any_other_reordering_is_rejected(conn):
+    # Car 3 left and the rest moved up, but 4 and 5 also swapped: more than
+    # a pit-lane move, so the stored grid stays.
+    quali, client, _ = six_car_grid(conn)
+    with pytest.raises(checks.ValidationError, match=r"other cars changed places as well: \[4, 5\]"):
+        refresh_with(conn, client, quali, {1: 1, 2: 2, 5: 3, 4: 4, 6: 5})
+    assert stored_grid(conn, quali) == [(car, car) for car in range(1, 7)]
+
+
+def test_accepted_shrink_is_recorded_for_the_tick_to_alert(conn):
+    # Through ingest_season: an accepted pit-lane shrink logs 'ok' AND leaves
+    # its warning in validation_issues, which is where tick._fetch finds it.
+    add_session(conn, add_event(conn, 2024, 24, "2024-12-08"), "Q")
+    responses = session_payload()
+    responses[("sessions", 2024)] = [
+        openf1_session(1234, 1, "Race", "2024-12-08T13:00:00+00:00"),
+        openf1_session(SESSION_KEY, 1, "Qualifying", "2024-12-07T14:00:00+00:00")]
+    quali = conn.execute("SELECT session_id FROM sessions WHERE session_type = 'Q'").fetchone()[0]
+    conn.executemany("INSERT INTO session_entries (session_id, car_number) VALUES (?, ?)",
+                     [(quali, car) for car in (1, 2, 3)])          # car 4 comes from the payload
+    responses[("starting_grid", SESSION_KEY)] = [
+        {"position": slot, "driver_number": car, "session_key": SESSION_KEY}
+        for car, slot in {1: 1, 4: 2, 2: 3, 3: 4}.items()]
+    client = FakeClient(responses)
+    monday = datetime(2024, 12, 9, 12, 0, tzinfo=timezone.utc)
+    assert openf1.ingest_season(conn, client, 2024, now=monday, session_types={"Q"},
+                                settle_hours=0)["2024-24-grid"] == "ok"
+
+    # Car 4 (2nd) to the pit lane: 2 and 3 move up one place each.
+    responses[("starting_grid", SESSION_KEY)] = [
+        {"position": slot, "driver_number": car, "session_key": SESSION_KEY}
+        for car, slot in {1: 1, 2: 2, 3: 3}.items()]
+    again = openf1.ingest_season(conn, client, 2024, now=monday, session_types={"Q"},
+                                 settle_hours=0, refresh_grid=True)
+    assert again["2024-24-grid"] == "ok"
+    recorded = [tuple(row) for row in conn.execute(
+        "SELECT check_name, severity FROM validation_issues WHERE item_key = '2024-24-grid'")]
+    assert recorded == [("starting_grid_pit_lane_shrink", "warning")]
+
+
+def test_grid_shrink_problem_rules():
+    old = {44: 1, 1: 2, 16: 3, 4: 4}
+    assert checks.grid_shrink_problem(old, {44: 1, 16: 2, 4: 3}) is None          # 1 to the pit lane
+    assert checks.grid_shrink_problem(old, {16: 1, 4: 2}) is None                  # 44 and 1 both
+    assert "at the back" in checks.grid_shrink_problem(old, {44: 1, 1: 2, 16: 3})  # 4 was last
+    assert "changed places" in checks.grid_shrink_problem(old, {44: 1, 4: 2, 16: 3})
+    assert "not in the stored grid" in checks.grid_shrink_problem(old, {44: 1, 16: 2, 99: 3})
+
+
+@pytest.mark.parametrize("positions, check", [
+    ([1, 2, 4, 5, 6, 7], "starting_grid_position_too_large"),   # 7 with only 6 cars
+    ([1, 2, 4, 5, 6, 7], "starting_grid_gaps"),                  # ...and place 3 empty
+    ([1, 2, 3, 5, 6], "starting_grid_gaps"),                     # 5 cars, place 4 empty
+])
+def test_grid_with_a_gap_or_a_slot_past_the_field_is_rejected(conn, positions, check):
+    event_id = add_event(conn, 2024, 24, "2024-12-08")
+    quali = add_session(conn, event_id, "Q")
+    conn.executemany("INSERT INTO session_entries (session_id, car_number) VALUES (?, ?)",
+                     [(quali, car) for car in range(1, 7)])
+    grid = [{"position": pos, "driver_number": car, "session_key": 77}
+            for car, pos in zip(range(1, 7), positions)]
+    with pytest.raises(checks.ValidationError, match=check):
+        openf1.load_starting_grid(conn, FakeClient({("starting_grid", 77): grid}), quali, 77)
+    assert stored_grid(conn, quali) == []
 
 
 def test_ingest_season_can_load_only_chosen_sessions(conn):

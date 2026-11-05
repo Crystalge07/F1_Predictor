@@ -167,6 +167,19 @@ def _fetch(conn: sqlite3.Connection, now: datetime, report: TickReport, jolpica_
             report.alerts.append((f"invalid:{item_key}",
                                   f"invalid data, not saved: {item_key}: {'; '.join(errors)}; "
                                   "retried every tick until it validates"))
+    # And the opposite case, decided by a rule rather than a person: a grid
+    # refresh that lost cars was ACCEPTED as pit-lane start(s) (the cars
+    # behind moved up exactly; validate/checks.grid_shrink_problem). Saved,
+    # but alerted so a person can check it against the FIA documents. Keyed
+    # by the message (it names the cars), so each distinct change alerts once.
+    for item_key, status in report.fetched.items():
+        if status != "ok":
+            continue
+        for row in conn.execute(
+                "SELECT detail FROM validation_issues WHERE item_key = ? "
+                "AND check_name = 'starting_grid_pit_lane_shrink'", (item_key,)):
+            report.alerts.append((f"pit_lane_shrink:{item_key}:{row['detail']}",
+                                  f"starting grid changed: {item_key}: {row['detail']}"))
 
 
 def _predict(conn: sqlite3.Connection, now: datetime, report: TickReport, n_sims: int | None) -> None:

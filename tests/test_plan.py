@@ -130,7 +130,8 @@ def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
     assert round2(conn, at("2027-03-14T13:05")) == [("fetch_session", "grid"), ("predict", "post_quali")]
     # ...or until the grid arrives.
     fetched(conn, "grid")
-    assert round2(conn, at("2027-03-14T09:00")) == [("predict", "post_quali")]
+    assert round2(conn, at("2027-03-14T09:00")) == [
+        ("fetch_session", "grid"), ("predict", "post_quali")]
 
 
 def test_a_stage_whose_cutoff_passed_is_missed_not_predicted_late(conn, ids):
@@ -178,12 +179,16 @@ def test_races_before_going_live_are_never_missed(conn):
     assert not any(a.kind == "missed" for a in plan(conn, at("2027-03-14T16:00")))
 
 
-def test_starting_grid_is_fetched_on_its_own_after_qualifying(conn, ids):
+def test_starting_grid_is_refreshed_until_post_quali_is_logged(conn, ids):
     for stage in ("pre_weekend", "practice"):
         add_live_run(conn, ids[2]["event"], stage)
     fetched(conn, "FP1", "FP2", "FP3", "Q")
     assert ("fetch_session", "grid") in round2(conn, at("2027-03-13T17:00"))
     fetched(conn, "grid")
+    # A cached success may pre-date a penalty, so refresh immediately before
+    # the immutable prediction instead of trusting ingestion_log forever.
+    assert ("fetch_session", "grid") in round2(conn, at("2027-03-13T17:00"))
+    add_live_run(conn, ids[2]["event"], "post_quali")
     assert ("fetch_session", "grid") not in round2(conn, at("2027-03-13T17:00"))
 
 

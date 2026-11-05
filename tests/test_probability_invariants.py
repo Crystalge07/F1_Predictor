@@ -1,17 +1,29 @@
 """Probability invariants: rules every prediction run must obey, whatever the data.
 
 Why these rules hold: the Monte Carlo simulator (simulate/monte_carlo.py)
-turns each simulated race into a complete finishing order 1..N. So in EVERY
-simulated race:
-    exactly 1 driver wins            -> p_win summed over drivers    = 1
-    exactly 3 drivers are on podium  -> p_podium summed              = 3
-    exactly 10 drivers score points  -> p_points summed              = 10
-(or N, if fewer than 10 / 3 drivers are in the race). Averaging over
-simulations keeps those totals, so each run's probabilities must add up to
-them exactly (up to floating-point rounding).
+turns each simulated race into a complete finishing order 1..N, with the
+unclassified cars (simulated DNFs) at the back. An unclassified car can't win,
+take a podium or score (since 2026-11-04), so in EVERY simulated race, for
+each of the k places that count (win k=1, podium k=3, points k=10; or N if
+fewer drivers are in the race):
+    places filled = min(k, N) - (unclassified cars that fell inside the top k)
+Unclassified cars only reach the top k when fewer than k are classified, and
+at most ALL of them can, so averaged over the simulated races:
+    min(k, N) - sum(p_dnf)  <=  sum(p_x)  <=  min(k, N)
+In a real 20-car race sum(p_dnf) is ~2, so this lower bound is tight for
+points (>= ~8) but says little for win and podium; a lost driver is still
+caught exactly by the mean_position and predicted_rank rules below.
+
+One catch: the log's p_dnf is the DNF MODEL's chance (predict/stage.py), not
+the share of simulated races in which the car was actually unclassified. The
+two differ by sampling noise (about +-0.3 points per driver at 10,000 races),
+so the rules that use p_dnf allow SAMPLING_SIGMAS standard errors of it. The
+rules that don't (win/podium/points maxima, nesting, positions, ranks) stay
+exact.
 
 Extra rules that follow from the same fact:
     p_win <= p_podium <= p_points for each driver (a win is a podium is points)
+    p_points + p_dnf <= 1 for each driver (an unclassified car never scores)
     average positions add up to 1 + 2 + ... + N (each simulated race hands out
         every place once)
     predicted_rank is exactly 1..N (the schema blocks duplicates, not gaps)
@@ -55,6 +67,23 @@ TOLERANCE = 1e-6
 
 PROBABILITY_COLUMNS = ["p_win", "p_podium", "p_points", "p_dnf"]
 
+# The rules that compare against p_dnf (module docstring) allow this many
+# standard errors of the simulated DNF rate around the model's p_dnf, sized
+# for the FEWEST simulated races any checked run uses (the fast tests' 2,000;
+# live runs use 10,000, so they get 2.2x more room than they need). A run
+# checked with fewer races could fail on noise: loud, never silently hidden.
+# 5 sigmas: ~1 false alarm in 3.5 million per check.
+SAMPLING_SIGMAS = 5
+MIN_SIMS = 2_000
+
+
+def dnf_sampling_error(p_dnf: pd.Series) -> pd.Series:
+    """Per driver: how far the simulated DNF rate may stray from p_dnf."""
+    # clip: a p_dnf outside 0..1 is reported by its own rule; here it would
+    # only put a negative number under the square root.
+    p_dnf = p_dnf.clip(0, 1)
+    return SAMPLING_SIGMAS * (p_dnf * (1 - p_dnf) / MIN_SIMS) ** 0.5
+
 # How far the odds may disagree with the order before it counts as a
 # contradiction: 5 percentage points. Simulation noise is ~0.5 points at
 # 10,000 races (and ~1 point at the 2,000 the fast tests use), and DNF
@@ -80,11 +109,20 @@ def invariant_problems(run: pd.DataFrame) -> list[str]:
 
     # --- The totals ---------------------------------------------------------
     # min(...): with fewer drivers than places, every driver gets the place.
-    expected_totals = {"p_win": min(1, n), "p_podium": min(3, n), "p_points": min(10, n)}
-    for column, expected in expected_totals.items():
+    # Each place goes to a classified car unless so few are classified that
+    # it's left empty, and only unclassified cars can leave it empty: so a
+    # total is at most the number of places and at least that minus the
+    # expected number of unclassified cars (module docstring).
+    # The sum's sampling error adds in quadrature over (independent) drivers.
+    expected_unclassified = run["p_dnf"].sum()
+    sum_error = (dnf_sampling_error(run["p_dnf"]) ** 2).sum() ** 0.5
+    for column, places in {"p_win": 1, "p_podium": 3, "p_points": 10}.items():
+        most = min(places, n)
+        least = most - expected_unclassified - sum_error
         total = run[column].sum()
-        if abs(total - expected) > TOLERANCE:
-            problems.append(f"{column} sums to {total:.6f}, expected {expected} ({n} drivers)")
+        if total > most + TOLERANCE or total < least - TOLERANCE:
+            problems.append(f"{column} sums to {total:.6f}, expected between {least:.6f} "
+                            f"and {most} ({n} drivers)")
 
     # --- Nesting: win is a podium is points -----------------------------------
     # The tolerance stops float noise from flagging equal values.
@@ -92,6 +130,13 @@ def invariant_problems(run: pd.DataFrame) -> list[str]:
                      | (run["p_podium"] > run["p_points"] + TOLERANCE)]
     if not not_nested.empty:
         problems.append(f"p_win <= p_podium <= p_points broken for {not_nested['driver_id'].tolist()}")
+
+    # --- An unclassified car never scores: in each simulated race a driver is
+    # either unclassified or (maybe) in the points, never both.
+    scores_while_out = run[run["p_points"] + run["p_dnf"]
+                           > 1 + dnf_sampling_error(run["p_dnf"]) + TOLERANCE]
+    if not scores_while_out.empty:
+        problems.append(f"p_points + p_dnf above 1 for {scores_while_out['driver_id'].tolist()}")
 
     # --- Average positions: each simulated race hands out places 1..N once ----
     expected_position_total = n * (n + 1) / 2
@@ -139,7 +184,8 @@ def order_problems(run: pd.DataFrame, tolerance: float = ORDER_TOLERANCE) -> lis
 def valid_run() -> pd.DataFrame:
     """A hand-made 4-driver run that obeys every rule.
 
-    Totals: win 1.0, podium 3.0, points 4.0 (all 4 score: fewer than 10 drivers),
+    Totals: win 1.0, podium 3.0, points 3.55 (fewer than 10 drivers, so
+    every CLASSIFIED driver scores: p_points = 1 - p_dnf),
     mean positions 1.2 + 2.1 + 2.9 + 3.8 = 10 = 1+2+3+4.
     """
     return pd.DataFrame({
@@ -147,7 +193,7 @@ def valid_run() -> pd.DataFrame:
         "predicted_rank": [1, 2, 3, 4],
         "p_win": [0.6, 0.3, 0.1, 0.0],
         "p_podium": [0.95, 0.9, 0.8, 0.35],
-        "p_points": [1.0, 1.0, 1.0, 1.0],
+        "p_points": [0.95, 0.9, 0.9, 0.8],
         "p_dnf": [0.05, 0.1, 0.1, 0.2],
         "mean_position": [1.2, 2.1, 2.9, 3.8],
     })
@@ -159,11 +205,13 @@ def test_checker_accepts_a_valid_run():
 
 def test_checker_catches_a_lost_driver():
     # Dropping driver 'b' (the kind of thing a bad merge does) breaks the
-    # win total, the podium total, the position total and the ranks at once.
+    # podium total, the position total and the ranks at once. (The win total
+    # 0.7 stays inside its bounds ~0.6..1: the lower bound allows for races
+    # with nobody classified, so it can't see a lost 0.3. The position and
+    # rank rules are the exact ones.)
     run = valid_run()
     run = run[run["driver_id"] != "b"]
     problems = invariant_problems(run)
-    assert any(p.startswith("p_win sums") for p in problems)
     assert any(p.startswith("p_podium sums") for p in problems)
     assert any(p.startswith("mean_position sums") for p in problems)
     assert any(p.startswith("predicted_rank") for p in problems)
@@ -177,6 +225,29 @@ def test_checker_catches_bad_values_and_nesting():
     problems = invariant_problems(run)
     assert any("p_dnf outside" in p for p in problems)
     assert any("p_win <= p_podium" in p and "'d'" in p for p in problems)
+
+
+def test_checker_catches_an_unclassified_car_scoring():
+    # The pre-2026-11-04 simulator with few cars: 'd' scores in every race
+    # of a 4-car field, including the 20% it isn't classified. (0.2 is far
+    # past the ~0.045 sampling allowance at p_dnf 0.2.)
+    run = valid_run()
+    run.loc[3, "p_points"] = 1.0
+    problems = invariant_problems(run)
+    assert any("p_points + p_dnf above 1" in p and "'d'" in p for p in problems)
+
+
+def test_checker_catches_totals_outside_their_bounds():
+    # Over the top: 1.3 wins handed out per race.
+    run = valid_run()
+    run.loc[1, "p_win"] = 0.6
+    assert any(p.startswith("p_win sums") for p in invariant_problems(run))
+    # Under the bottom: points 1.55, but on average only 0.45 cars per race
+    # are unclassified, so about 4 - 0.45 = 3.55 places must be filled
+    # (minus a ~0.08 sampling allowance).
+    run = valid_run()
+    run["p_points"] = [0.95, 0.2, 0.2, 0.2]
+    assert any(p.startswith("p_points sums") for p in invariant_problems(run))
 
 
 def test_order_checker_accepts_an_order_that_follows_the_odds():
