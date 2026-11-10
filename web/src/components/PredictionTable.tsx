@@ -5,6 +5,7 @@
 import { Link } from "react-router-dom";
 import type { Race, Run } from "../types";
 import { ANCHOR, driverName, formatPct, raceKey, teamName } from "../race";
+import { teamColour } from "../teams";
 
 function Pct({ value, label }: { value: number; label: string }) {
   return (
@@ -38,9 +39,10 @@ export function PredictionTable({ race, run }: { race: Race; run: Run }) {
           {run.drivers.map((d) => {
             const info = race.drivers[d.driver_id];
             return (
-              <tr key={d.driver_id}>
+              <tr key={d.driver_id} className={d.predicted_rank <= 3 ? "is-top" : undefined}>
                 <td className="left rank">{d.predicted_rank}</td>
-                <td className="left">
+                {/* --team: the team-colour stripe at the left of the name (CSS .driver-cell). */}
+                <td className="left driver-cell" style={{ ["--team" as string]: teamColour(d.team_id) }}>
                   {/* The name opens the Why page for this driver at this stage. */}
                   <Link
                     className="driver-name driver-link"

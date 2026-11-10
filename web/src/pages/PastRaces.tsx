@@ -16,6 +16,7 @@ import { driverName, raceKey, STAGE_ORDER, teamName } from "../race";
 import { BASELINE_NAMES } from "../scorecard";
 import type { Index, Mode, Race, RaceScores, Run, Scorecard, Stage } from "../types";
 import { ErrorBox, Loading } from "../components/Status";
+import { RaceTitle } from "../components/RaceTitle";
 
 // Column headers on a phone, where the full names don't fit side by side.
 const SHORT_STAGE = { pre_weekend: "Pre", practice: "Practice", post_quali: "Quali" } as const;
@@ -150,7 +151,7 @@ function RaceReview({ race }: { race: Race }) {
       <p className="eyebrow">
         <Link to="/results">Results</Link> · {race.season} · Round {race.round}
       </p>
-      <h1>{race.name}</h1>
+      <RaceTitle name={race.name} />
       <p className="muted race-meta">{race.circuit}</p>
 
       {modes.length > 1 && (

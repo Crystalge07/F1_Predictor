@@ -1,11 +1,14 @@
 // Next race: the home page.
 //
-//   1. For ~2 days after a race: a "how we did" card for it (RecentResult).
-//   2. The next race, with the weekend tracker (which predictions are logged,
-//      which is next, and what's still to come), then the latest prediction,
-//      tabs for the earlier stages, and how the win chances moved.
+//   1. The hero: round, race name, circuit, and stat tiles (HeroStats).
+//   2. The weekend tracker (which predictions are logged, which is next,
+//      and what's still to come).
+//   3. A dashboard grid (CSS .race-layout). Wide screens: the latest
+//      prediction (with tabs for the earlier stages) on the left; on the
+//      right, the last race's "how we did" card (for ~2 days after it,
+//      RecentResult) and how the win chances moved. Phones: one column.
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRace, useSiteData } from "../data";
 import { formatUtc, STAGE_NAMES } from "../format";
 import { CUTOFF_SESSION, liveRuns, raceKey } from "../race";
@@ -16,6 +19,8 @@ import { PredictionTable } from "../components/PredictionTable";
 import { OddsChart } from "../components/OddsChart";
 import { WeekendTracker } from "../components/WeekendTracker";
 import { RecentResult } from "../components/RecentResult";
+import { HeroStats } from "../components/HeroStats";
+import { RaceTitle } from "../components/RaceTitle";
 
 export function NextRace() {
   const site = useSiteData();
@@ -33,10 +38,18 @@ export function NextRace() {
   const now = new Date();
   const dataTime = new Date(site.data.version.exported_at_utc);
   const recent = recentRace(site.data.index.seasons, now);
+  const recentCard = recent?.file ? (
+    <RecentResult file={recent.file} raceKey={raceKey(recent.season, recent.round)} />
+  ) : null;
+  // With a race to show, the card goes in that page's side column; without
+  // one, it simply sits on top.
+  if (race?.state === "ready") {
+    return <NextRaceBody next={next} entry={entry} race={race} now={now} dataTime={dataTime} recentCard={recentCard} />;
+  }
   return (
     <>
-      {recent?.file && <RecentResult file={recent.file} raceKey={raceKey(recent.season, recent.round)} />}
-      <NextRaceBody next={next} entry={entry} race={race} now={now} dataTime={dataTime} />
+      {recentCard}
+      <NextRaceBody next={next} entry={entry} race={race} now={now} dataTime={dataTime} recentCard={null} />
     </>
   );
 }
@@ -47,9 +60,10 @@ interface BodyProps {
   race: ReturnType<typeof useRace>;
   now: Date;
   dataTime: Date;
+  recentCard: ReactNode; // the last race's "how we did" card, if it's still showing
 }
 
-function NextRaceBody({ next, entry, race, now, dataTime }: BodyProps) {
+function NextRaceBody({ next, entry, race, now, dataTime, recentCard }: BodyProps) {
   if (!next || !entry) {
     return (
       <section>
@@ -63,7 +77,7 @@ function NextRaceBody({ next, entry, race, now, dataTime }: BodyProps) {
     return (
       <section>
         <p className="eyebrow">{next.season} · Round {entry.round}</p>
-        <h1>{entry.name}</h1>
+        <RaceTitle name={entry.name} />
         <p className="muted">Race start: {formatUtc(entry.race_start_utc)}</p>
         <p>No prediction has been logged yet. The first one is made once the previous race's result is in, before practice starts.</p>
       </section>
@@ -72,10 +86,17 @@ function NextRaceBody({ next, entry, race, now, dataTime }: BodyProps) {
   if (race.state === "loading") return <Loading what="the race" />;
   if (race.state === "error") return <ErrorBox message={race.message} />;
   // key: a different race gets a fresh view (its own latest stage selected).
-  return <RaceView key={entry.file} race={race.data} now={now} dataTime={dataTime} />;
+  return <RaceView key={entry.file} race={race.data} now={now} dataTime={dataTime} recentCard={recentCard} />;
 }
 
-function RaceView({ race, now, dataTime }: { race: Race; now: Date; dataTime: Date }) {
+interface RaceViewProps {
+  race: Race;
+  now: Date;
+  dataTime: Date;
+  recentCard: ReactNode;
+}
+
+function RaceView({ race, now, dataTime, recentCard }: RaceViewProps) {
   const runs = liveRuns(race);
   // The latest stage is shown first; the tabs go back through the weekend.
   const [stage, setStage] = useState<Stage | null>(runs.length ? runs[runs.length - 1].stage : null);
@@ -84,59 +105,79 @@ function RaceView({ race, now, dataTime }: { race: Race; now: Date; dataTime: Da
 
   return (
     <section>
-      <p className="eyebrow">{race.season} · Round {race.round}</p>
-      <h1>{race.name}</h1>
-      <p className="muted race-meta">
-        {race.circuit}
-        {race.locality ? `, ${race.locality}` : ""}
-        {race.country ? `, ${race.country}` : ""}
-      </p>
+      {/* The hero: round, race name in the big display face, circuit, then
+          the headline numbers as tiles (the table below has the detail). */}
+      <div className="hero">
+        <p className="eyebrow">
+          <span className="live-dot" aria-hidden="true" />
+          {race.season} · Round {race.round}
+        </p>
+        <RaceTitle name={race.name} />
+        <p className="muted race-meta">
+          {race.circuit}
+          {race.locality ? `, ${race.locality}` : ""}
+          {race.country ? `, ${race.country}` : ""}
+        </p>
+        <HeroStats race={race} latest={latest} now={now} />
+      </div>
       <WeekendTracker race={race} now={now} dataTime={dataTime} selected={run?.stage ?? null} onSelect={setStage} />
 
-      {!run ? (
-        <p>No prediction has been logged yet. The first one is made before practice starts.</p>
-      ) : (
-        <>
-          <div className="tabs" role="tablist" aria-label="Prediction stage">
-            {runs.map((r) => (
-              <button
-                key={r.stage}
-                type="button"
-                role="tab"
-                className="tab"
-                id={`tab-${r.stage}`}
-                aria-selected={r.stage === run.stage}
-                aria-controls="stage-panel"
-                onClick={() => setStage(r.stage)}
-              >
-                {STAGE_NAMES[r.stage]}
-              </button>
-            ))}
-          </div>
-          <div className="card" role="tabpanel" id="stage-panel" aria-labelledby={`tab-${run.stage}`}>
-            <h2 className="stage-heading">
-              {run === latest ? "Current prediction" : "Earlier prediction"}: {STAGE_NAMES[run.stage].toLowerCase()}
-            </h2>
-            <p className="muted small" style={{ marginTop: 0 }}>
-              Logged {formatUtc(run.logged_at_utc)}, before {CUTOFF_SESSION[run.stage]} ({formatUtc(run.as_of_utc)}).
-              Never edited since. Chances come from 10,000 simulated races. Click a driver to see why.
-            </p>
-            <PredictionTable race={race} run={run} />
-          </div>
+      {/* Wide screens: the table on the left, the last race and the chart on
+          the right. Phones: one column (last race, table, chart). */}
+      <div className="race-layout">
+        {recentCard && <div className="area-recent">{recentCard}</div>}
+        {!run ? (
+          <p className="area-main">No prediction has been logged yet. The first one is made before practice starts.</p>
+        ) : (
+          <>
+            {/* One card: a header row (title + stage tabs), then the table.
+                The tabs live inside the card so its top lines up with the
+                card beside it. */}
+            <div className="card area-main prediction-card">
+              <div className="card-head">
+                <h2 className="stage-heading">
+                  {run === latest ? "Current prediction" : "Earlier prediction"}: {STAGE_NAMES[run.stage].toLowerCase()}
+                </h2>
+                <div className="tabs" role="tablist" aria-label="Prediction stage">
+                  {runs.map((r) => (
+                    <button
+                      key={r.stage}
+                      type="button"
+                      role="tab"
+                      className="tab"
+                      id={`tab-${r.stage}`}
+                      aria-selected={r.stage === run.stage}
+                      aria-controls="stage-panel"
+                      onClick={() => setStage(r.stage)}
+                    >
+                      {STAGE_NAMES[r.stage]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div role="tabpanel" id="stage-panel" aria-labelledby={`tab-${run.stage}`}>
+                <p className="muted small card-note">
+                  Logged {formatUtc(run.logged_at_utc)}, before {CUTOFF_SESSION[run.stage]} ({formatUtc(run.as_of_utc)}).
+                  Never edited since. Chances come from 10,000 simulated races. Click a driver to see why.
+                </p>
+                <PredictionTable race={race} run={run} />
+              </div>
+            </div>
 
-          <div className="card">
-            <h2>How the win chances moved</h2>
-            {runs.length < 2 ? (
-              <p className="muted">
-                This chart appears once a second prediction is logged for this race (after practice), so you can see how
-                the chances moved.
-              </p>
-            ) : (
-              <OddsChart race={race} runs={runs} />
-            )}
-          </div>
-        </>
-      )}
+            <div className="card area-chart">
+              <h2>How the win chances moved</h2>
+              {runs.length < 2 ? (
+                <p className="muted">
+                  This chart appears once a second prediction is logged for this race (after practice), so you can see how
+                  the chances moved.
+                </p>
+              ) : (
+                <OddsChart race={race} runs={runs} />
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </section>
   );
 }
