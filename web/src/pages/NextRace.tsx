@@ -1,19 +1,22 @@
-// Next race: the latest live prediction for the next race, every stage
-// logged so far, and how the win chances moved between them.
+// Next race: the home page.
+//
+//   1. For ~2 days after a race: a "how we did" card for it (RecentResult).
+//   2. The next race, with the weekend tracker (which predictions are logged,
+//      which is next, and what's still to come), then the latest prediction,
+//      tabs for the earlier stages, and how the win chances moved.
 
 import { useState } from "react";
 import { useRace, useSiteData } from "../data";
 import { formatUtc, STAGE_NAMES } from "../format";
 import { CUTOFF_SESSION, liveRuns } from "../race";
 import type { Race, Stage } from "../types";
+import { recentRace } from "../weekend";
 import { ErrorBox, Loading } from "../components/Status";
 import { PredictionTable } from "../components/PredictionTable";
 import { OddsChart } from "../components/OddsChart";
-
-const SESSION_NAMES: Record<string, string> = {
-  FP1: "Practice 1", FP2: "Practice 2", FP3: "Practice 3", SQ: "Sprint qualifying",
-  S: "Sprint", Q: "Qualifying", R: "Race",
-};
+import { WeekendTracker } from "../components/WeekendTracker";
+import { RecentResult } from "../components/RecentResult";
+import { raceKey } from "./PastRaces";
 
 export function NextRace() {
   const site = useSiteData();
@@ -26,6 +29,28 @@ export function NextRace() {
 
   if (site.state === "loading") return <Loading />;
   if (site.state === "error") return <ErrorBox message={site.message} />;
+  // The viewer's clock (which sessions are over) and the data's clock (when
+  // the files were exported): see weekend.ts for why both.
+  const now = new Date();
+  const dataTime = new Date(site.data.version.exported_at_utc);
+  const recent = recentRace(site.data.index.seasons, now);
+  return (
+    <>
+      {recent?.file && <RecentResult file={recent.file} raceKey={raceKey(recent.season, recent.round)} />}
+      <NextRaceBody next={next} entry={entry} race={race} now={now} dataTime={dataTime} />
+    </>
+  );
+}
+
+interface BodyProps {
+  next: { season: number; round: number } | null;
+  entry: { round: number; name: string; race_start_utc: string | null; file: string | null } | undefined;
+  race: ReturnType<typeof useRace>;
+  now: Date;
+  dataTime: Date;
+}
+
+function NextRaceBody({ next, entry, race, now, dataTime }: BodyProps) {
   if (!next || !entry) {
     return (
       <section>
@@ -48,15 +73,15 @@ export function NextRace() {
   if (race.state === "loading") return <Loading what="the race" />;
   if (race.state === "error") return <ErrorBox message={race.message} />;
   // key: a different race gets a fresh view (its own latest stage selected).
-  return <RaceView key={entry.file} race={race.data} />;
+  return <RaceView key={entry.file} race={race.data} now={now} dataTime={dataTime} />;
 }
 
-function RaceView({ race }: { race: Race }) {
+function RaceView({ race, now, dataTime }: { race: Race; now: Date; dataTime: Date }) {
   const runs = liveRuns(race);
   // The latest stage is shown first; the tabs go back through the weekend.
   const [stage, setStage] = useState<Stage | null>(runs.length ? runs[runs.length - 1].stage : null);
   const run = runs.find((r) => r.stage === stage) ?? runs[runs.length - 1];
-  const sessions = Object.entries(race.sessions).filter(([, start]) => start);
+  const latest = runs.length ? runs[runs.length - 1] : null;
 
   return (
     <section>
@@ -67,13 +92,7 @@ function RaceView({ race }: { race: Race }) {
         {race.locality ? `, ${race.locality}` : ""}
         {race.country ? `, ${race.country}` : ""}
       </p>
-      <ul className="sessions" aria-label="Sessions (UTC)">
-        {sessions.map(([type, start]) => (
-          <li key={type}>
-            <strong>{SESSION_NAMES[type] ?? type}</strong> {formatUtc(start)}
-          </li>
-        ))}
-      </ul>
+      <WeekendTracker race={race} now={now} dataTime={dataTime} selected={run?.stage ?? null} onSelect={setStage} />
 
       {!run ? (
         <p>No prediction has been logged yet. The first one is made before practice starts.</p>
@@ -96,6 +115,9 @@ function RaceView({ race }: { race: Race }) {
             ))}
           </div>
           <div className="card" role="tabpanel" id="stage-panel" aria-labelledby={`tab-${run.stage}`}>
+            <h2 className="stage-heading">
+              {run === latest ? "Current prediction" : "Earlier prediction"}: {STAGE_NAMES[run.stage].toLowerCase()}
+            </h2>
             <p className="muted small" style={{ marginTop: 0 }}>
               Logged {formatUtc(run.logged_at_utc)}, before {CUTOFF_SESSION[run.stage]} ({formatUtc(run.as_of_utc)}).
               Never edited since. Chances come from 10,000 simulated races.
