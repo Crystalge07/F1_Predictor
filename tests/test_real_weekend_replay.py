@@ -40,7 +40,8 @@ from replay_f1 import ReplayF1
 from test_probability_invariants import invariant_problems, order_problems
 
 START = datetime(2026, 10, 26, 0, 0, tzinfo=timezone.utc)    # Monday after Austin
-END = datetime(2026, 11, 3, 12, 0, tzinfo=timezone.utc)      # Tuesday after Mexico City
+END = datetime(2026, 11, 5, 0, 0, tzinfo=timezone.utc)       # Thursday after Mexico City: past
+                                                             # its 72h re-check (R20 pre-weekend waits for it)
 HOUR = timedelta(hours=1)
 N_SIMS = 2_000
 
@@ -105,10 +106,12 @@ def test_every_stage_is_logged_live_when_expected(replay):
     # When each was logged, given the real session times and the modelled
     # publishing delays (tests/replay_f1.py):
     assert logged_at(reports) == {
-        "2026 R19 pre_weekend": utc("2026-10-26T00:00:00"),   # Austin's result is already in
+        # Pre-weekend waits for the previous result's 72h re-check (race
+        # start + 2h + 30 min + 72h, at the next tick): Austin's, Mexico's.
+        "2026 R19 pre_weekend": utc("2026-10-28T23:00:00"),
         "2026 R19 practice": utc("2026-10-31T19:00:00"),      # FP3 fetched (ended 18:30, +30 min)
         "2026 R19 post_quali": utc("2026-11-01T00:00:00"),    # OpenF1 starting grid (Q end + 2h)
-        "2026 R20 pre_weekend": utc("2026-11-01T23:00:00"),   # Mexico City's result is in
+        "2026 R20 pre_weekend": utc("2026-11-04T23:00:00"),
     }
     for (rnd, stage_name), run in runs(conn).items():
         assert logged_at(reports)[f"2026 R{rnd} {stage_name}"] < parse_utc(run["as_of_utc"])
@@ -133,9 +136,9 @@ def test_real_data_loads_and_passes_validation(replay):
     conn, _ = replay
     status = dict(conn.execute("SELECT item_key, status FROM ingestion_log WHERE item_key LIKE '2026-19-%'"))
     assert status == {**{f"2026-19-{t}": "ok" for t in ("FP1", "FP2", "FP3", "Q", "R", "grid")},
-                      # The replay runs past race + 24h, so the result was re-checked
-                      # once (pipeline/plan.RESULT_RECHECKS); it hadn't changed.
-                      "2026-19-results-recheck-24h": "ok"}
+                      # The replay runs past race + 72h, so the result was re-checked
+                      # twice (pipeline/plan.RESULT_RECHECKS); it hadn't changed.
+                      "2026-19-results-recheck-24h": "ok", "2026-19-results-recheck-72h": "ok"}
     assert conn.execute("SELECT COUNT(*) FROM validation_issues WHERE severity = 'error'").fetchone()[0] == 0
     # A real quirk, handled: OpenF1's FP3 driver list has 21 cars, but 22
     # set laps. The missing one (Lawson, car 30) is still saved, and matched

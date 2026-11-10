@@ -251,12 +251,12 @@ There's no "FP2 job" or "race job". **One job, the tick, runs every hour** and a
 
 1. **Plan** (`pipeline/plan.py`) reads the calendar, data and log and returns actions: fetch a finished session, fetch Jolpica results, predict a stage, score a race, re-check a result. Anything already done isn't planned again, so a failed or skipped tick is simply caught up by the next one (idempotent and self-healing). Sprint weekends, odd start times and cancelled sessions all come from the calendar.
 2. **Fetch** (`pipeline/fetch.py`) loads exactly what the planner found ready, through the same loaders and validation as the backfill.
-3. **Predict** each stage once its data is in, or with whatever exists at the last call (2 hours before qualifying / the race). A stage whose cutoff passes with no live run is reported as **missed**, never predicted late.
+3. **Predict** each stage once its data is in, or with whatever exists at the last call (2 hours before the first session / qualifying / the race). The pre-weekend stage waits for the previous race's result to be re-checked 72 hours after the race, so a late penalty is already in. A stage whose cutoff passes with no live run is reported as **missed**, never predicted late.
 4. **Score** any race whose result has arrived.
 
 **Alerts** are raised once each: a blocked prediction, a missed stage, invalid data, a session still missing 24h after it should exist, Jolpica 48h late, a revised result, model drift, a gap of 3+ hours between runs. A new alert fails the run, so GitHub emails about it. A healthchecks.io ping on every run emails if runs stop altogether.
 
-**Where the database lives:** as `f1.sqlite.gz` on a GitHub Release named `database`. Each run downloads it, ticks, checks it's safe to upload (`scripts/check_db_upload.py`: file is healthy, every live prediction is still there and unchanged), and uploads it back, keeping the previous copy and a backup per weekday. A concurrency lock stops two runs overlapping. An outside cron service triggers the workflow hourly, since GitHub's own schedule proved unreliable.
+**Where the database lives:** as `f1.sqlite.gz` on a GitHub Release named `database`. Each run downloads it, ticks, checks it's safe to upload (`scripts/check_db_upload.py`: file is healthy, every live prediction is still there and unchanged), and uploads it back, keeping the previous copy and a backup per weekday (uploaded by the first run of each UTC day). A concurrency lock stops two runs overlapping. An outside cron service triggers the workflow hourly, since GitHub's own schedule proved unreliable.
 
 ### 12. The dashboard (`web/`)
 
@@ -412,11 +412,11 @@ Every value a script tunes (2026 weight, DNF shrinkage, simulator blend and nois
 ## 🧪 Tests
 
 ```bash
-pytest                  # ~450 Python tests
+pytest                  # ~470 Python tests
 cd web && npm test      # dashboard tests
 ```
 
-Beyond unit tests, the suite includes a full simulated race weekend with zero manual steps, a replay of the real 2026 Mexico City weekend from recorded API responses, leakage tests, sprint weekends, crash recovery, late and broken data, timezone handling, and model probes (monotonicity, stability, probability invariants).
+Both run on every push (`.github/workflows/tests.yml` and `web.yml`), so a broken commit shows up before the hourly pipeline runs it. Beyond unit tests, the suite includes a full simulated race weekend with zero manual steps, a replay of the real 2026 Mexico City weekend from recorded API responses, leakage tests, sprint weekends, crash recovery, late and broken data, timezone handling, and model probes (monotonicity, stability, probability invariants).
 
 ## 🗂️ File Structure
 

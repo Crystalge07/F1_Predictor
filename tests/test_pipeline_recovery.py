@@ -33,7 +33,8 @@ from f1predictor.predict import stage
 from fake_f1 import FakeF1
 
 START = datetime(2027, 3, 1, 0, 0, tzinfo=timezone.utc)   # Monday before round 1 (race Sun Mar 7)
-END = datetime(2027, 3, 8, 6, 0, tzinfo=timezone.utc)     # Monday morning: race scored, R2 pre-weekend logged
+END = datetime(2027, 3, 8, 6, 0, tzinfo=timezone.utc)     # Monday morning: race scored (R2's pre-weekend
+                                                          # waits for the 72h re-check, after this week)
 HOUR = timedelta(hours=1)
 N_SIMS = 2_000                                            # enough for these checks, and fast
 CLEAN_VERSION = "abc1234+settings.00000000"
@@ -129,7 +130,7 @@ def test_the_reference_week_did_the_whole_weekend(reference):
     fp = reference["fingerprint"]
     assert [r[:4] for r in fp["runs"]] == [
         (2027, 1, "post_quali", "live"), (2027, 1, "practice", "live"),
-        (2027, 1, "pre_weekend", "live"), (2027, 2, "pre_weekend", "live"),
+        (2027, 1, "pre_weekend", "live"),
     ]
     scored_runs = {s[:4] for s in fp["scores"]}
     assert scored_runs == {r[:4] for r in fp["runs"] if r[1] == 1}    # all of round 1 scored

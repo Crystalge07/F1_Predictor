@@ -104,11 +104,23 @@ jobs:
           # 2. The new version.
           gzip -c data/f1.sqlite > data/upload/f1.sqlite.gz
           gh release upload "$RELEASE" data/upload/f1.sqlite.gz --clobber
-          # 3. Once a day (the midnight UTC run), a backup named after the
-          #    weekday, so there are always 7 days of history to go back to.
-          if [ "$(date -u +%H)" = "00" ]; then
-            cp data/upload/f1.sqlite.gz "data/upload/f1-$(date -u +%a).sqlite.gz"
-            gh release upload "$RELEASE" "data/upload/f1-$(date -u +%a).sqlite.gz" --clobber
+          # 3. Once a day, a backup named after the weekday, so there are
+          #    always 7 days of history to go back to. Uploaded by the FIRST
+          #    run of the UTC day, whenever that is: today's file is missing,
+          #    or is last week's (older than a day). Until 2026-11-10 this
+          #    only ran in the 00:xx hour, so a day whose midnight run was
+          #    skipped (GitHub's scheduler drops runs) got no backup at all:
+          #    there was no f1-Wed.
+          backup="f1-$(date -u +%a).sqlite.gz"
+          updated="$(gh release view "$RELEASE" --json assets \
+                     --jq ".assets[] | select(.name == \"$backup\") | .updatedAt")"
+          age=$(( $(date -u +%s) - $(date -u -d "${updated:-1970-01-01T00:00:00Z}" +%s) ))
+          if [ "$age" -gt 86400 ]; then
+            cp data/upload/f1.sqlite.gz "data/upload/$backup"
+            gh release upload "$RELEASE" "data/upload/$backup" --clobber
+            echo "uploaded the daily backup $backup"
+          else
+            echo "$backup is from today already (${age}s old): not replaced"
           fi
 
       - name: Export the dashboard data

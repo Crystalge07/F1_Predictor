@@ -146,8 +146,10 @@ def test_a_late_jolpica_result_is_retried_and_scoring_waits_for_it():
     assert reports[in_at].scored == ["2027 R1: 3 run(s)"]
     assert race_results(conn) == 20
     assert new_alerts(reports) == []
-    # Round 2's pre-weekend stage waited for the result, then was logged.
-    assert any("R2 pre_weekend -> live run" in line for line in reports[in_at].predicted)
+    # Round 2's pre-weekend stage waits for the result AND its 72h re-check
+    # (plan._previous_result_settled), which is after this week ends: so
+    # it's not logged yet, even though the result is in.
+    assert not any("R2 pre_weekend" in line for r in reports.values() for line in r.predicted)
 
 
 class FlakyServer:
@@ -307,6 +309,30 @@ def test_a_cancelled_qualifying_still_gets_a_practice_prediction_and_says_why_po
     assert paced == 20
     # And both logged runs are scored once the result is in.
     assert scored_runs(conn) == 2
+
+
+def test_jolpica_qualifying_late_past_the_race_still_gets_a_post_quali_from_the_grid():
+    # Jolpica publishes nothing for qualifying until after the race, but
+    # OpenF1's starting grid is in on Saturday evening. Review 2026-11-10:
+    # the last call used to need Jolpica's rows too, so this weekend got no
+    # post-quali prediction at all. Now it's logged from the grid at the
+    # last call, with an alert that its qualifying gaps are blank.
+    world = FakeF1(now=START, empty_until={(2027, 1, "qualifying"): RACE_FIRST_FETCH})
+    conn, reports = run_week(world)
+
+    assert logged_stages(conn) == {"pre_weekend", "practice", "post_quali"}
+    run = conn.execute("SELECT run_id, lineup_source, created_at_utc FROM prediction_runs "
+                       "WHERE stage = 'post_quali'").fetchone()
+    assert run["lineup_source"] == "starting_grid"
+    # Logged at the last call (within 2h of the 15:00 race), not before.
+    logged = [now for now, report in reports.items()
+              if any("R1 post_quali -> live run" in line for line in report.predicted)]
+    assert logged and datetime(2027, 3, 7, 13, 0, tzinfo=timezone.utc) <= logged[0] < \
+        datetime(2027, 3, 7, 15, 0, tzinfo=timezone.utc)
+    alerts = [message for _when, message in new_alerts(reports)]
+    assert any(m.startswith("logged with weak inputs: 2027 R1 post_quali") for m in alerts)
+    assert not any(m.startswith("missed") for m in alerts)
+    assert scored_runs(conn) == 3
 
 
 # -----------------------------------------------------------------------------

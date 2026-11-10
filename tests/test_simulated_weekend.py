@@ -25,7 +25,9 @@ from f1predictor.predict import stage
 from fake_f1 import FakeF1, starting_grid
 
 START = datetime(2027, 3, 1, 0, 0, tzinfo=timezone.utc)      # Monday before round 1
-END = datetime(2027, 3, 16, 12, 0, tzinfo=timezone.utc)      # Tuesday after round 2
+END = datetime(2027, 3, 18, 0, 0, tzinfo=timezone.utc)       # Thursday after round 2: past its
+                                                              # 72h result re-check, which round 3's
+                                                              # pre-weekend stage waits for
 
 
 def simulate(broken=None, **world_options):

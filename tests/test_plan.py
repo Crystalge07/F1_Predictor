@@ -37,9 +37,10 @@ def db():
         for kind, start in sessions.items():
             ids[rnd][kind] = c.execute("INSERT INTO sessions (event_id, session_type, start_time_utc) "
                                        "VALUES (?, ?, ?)", (event, kind, start)).lastrowid
-    # Round 1 is fully done: result in, OpenF1 fetched.
+    # Round 1 is fully done: result in, OpenF1 fetched, result re-checked.
     add_result(c, ids[1]["R"])
     ingestion_log.record(c, "openf1", "2027-01-R", "ok")
+    recheck_done(c, "24h", "72h")
     yield c, ids
     c.close()
 
@@ -66,6 +67,12 @@ def add_live_run(c, event_id, stage, created="2027-03-01T00:00:00Z"):
                      (event_id, stage, created)).lastrowid
 
 
+def recheck_done(c, *afters):
+    """Mark round 1's result re-checks ('24h', '72h') as done (plan.recheck_key)."""
+    for after in afters:
+        ingestion_log.record(c, "jolpica", f"2027-01-results-recheck-{after}", "ok")
+
+
 def fetched(c, *items):
     for item in items:
         ingestion_log.record(c, "openf1", f"2027-02-{item}", "ok")
@@ -76,8 +83,24 @@ def round2(c, now):
     return [(a.kind, a.target) for a in plan(c, now) if a.round == 2]
 
 
-def test_monday_after_previous_race_predicts_pre_weekend(conn):
-    assert round2(conn, at("2027-03-08T09:00")) == [("predict", "pre_weekend")]
+def test_pre_weekend_once_the_previous_result_is_rechecked(conn):
+    assert round2(conn, at("2027-03-10T19:00")) == [("predict", "pre_weekend")]
+
+
+def test_pre_weekend_waits_for_the_previous_results_last_recheck(conn):
+    # 2026 R21: logged straight after R20's first result, a day before that
+    # result was revised. Now it waits for the 72h re-check...
+    conn.execute("DELETE FROM ingestion_log WHERE item_key LIKE '%recheck%'")
+    recheck_done(conn, "24h")
+    assert ("predict", "pre_weekend") not in round2(conn, at("2027-03-09T09:00"))
+    assert ("predict", "pre_weekend") not in round2(conn, at("2027-03-12T09:00"))
+    # ...but never past the last call before FP1 (12:00): if the re-check
+    # keeps failing, predict with the result as it is.
+    planned = [(a.kind, a.target, a.reason) for a in plan(conn, at("2027-03-12T10:05")) if a.round == 2]
+    assert [(k, t) for k, t, _ in planned] == [("predict", "pre_weekend")]
+    assert "not re-checked" in planned[0][2]
+    recheck_done(conn, "72h")
+    assert round2(conn, at("2027-03-10T19:00")) == [("predict", "pre_weekend")]
 
 
 def test_a_logged_stage_is_not_planned_again(conn, ids):
@@ -190,6 +213,23 @@ def test_score_once_the_result_is_in(conn, ids):
     fetched(conn, "R")
     add_result(conn, ids[2]["R"])
     assert round2(conn, at("2027-03-14T18:00")) == [("score", "race")]
+
+
+def test_post_quali_last_call_with_the_grid_but_no_jolpica_qualifying(conn, ids):
+    # Jolpica's qualifying is late past the race, but OpenF1's starting grid
+    # is in: the last call predicts from the grid (as_of.grid_lineup) instead
+    # of missing the stage.
+    event = ids[2]["event"]
+    for stage in ("pre_weekend", "practice"):
+        add_live_run(conn, event, stage)
+    fetched(conn, "FP1", "FP2", "FP3", "Q", "grid")
+    before = round2(conn, at("2027-03-14T09:00"))
+    assert ("predict", "post_quali") not in before                  # not yet: still waiting for Jolpica
+    assert ("fetch_jolpica", "qualifying") in before
+    assert ("predict", "post_quali") in round2(conn, at("2027-03-14T13:05"))
+    # With neither the grid nor Jolpica's order, there's nothing to predict from.
+    conn.execute("DELETE FROM ingestion_log WHERE item_key = '2027-02-grid'")
+    assert ("predict", "post_quali") not in round2(conn, at("2027-03-14T13:05"))
 
 
 def test_season_opener_is_predicted_within_two_weeks_of_fp1(conn):

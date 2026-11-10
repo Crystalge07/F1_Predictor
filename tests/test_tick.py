@@ -26,6 +26,15 @@ def fake_world(monkeypatch):
     monkeypatch.setattr(stage, "MIN_DRIVERS", 2)
 
 
+@pytest.fixture(autouse=True)
+def previous_result_rechecked(conn):
+    """Race 1's result re-checks are done, so race 2's pre-weekend stage is
+    due on the Monday before (plan._previous_result_settled)."""
+    from f1predictor.db import ingestion_log
+    for after in ("24h", "72h"):
+        ingestion_log.record(conn, "jolpica", f"2024-01-results-recheck-{after}", "ok")
+
+
 def run(conn, now=MONDAY_BEFORE, dry_run=False):
     return tick.run_tick(conn, now=now, dry_run=dry_run, jolpica_client=object(),
                          openf1_client=object(), n_sims=2_000)
@@ -127,3 +136,24 @@ def test_a_result_revised_after_scoring_is_rescored_and_alerted_once(conn, weeke
 
     third = run(conn)                             # nothing changed since: nothing to do
     assert third.scored == [] and third.new_alerts == []
+
+
+def test_a_prediction_finished_after_its_cutoff_is_not_logged(conn, weekend, monkeypatch):
+    # Review 2026-11-10: the cutoff used to be checked against the time the
+    # tick STARTED. A tick starting at 10:58, two minutes before FP1 (11:00,
+    # the pre-weekend cutoff), whose fetching and simulating took 5 minutes,
+    # would have logged a "live" run after FP1 began. Now the check uses the
+    # tick's clock at the moment of the check: start + elapsed time.
+    fake_seconds = [0.0]
+    monkeypatch.setattr(tick.time, "monotonic", lambda: fake_seconds[0])
+    real_make_prediction = tick.make_prediction
+
+    def slow_make_prediction(*args, **kwargs):
+        prediction = real_make_prediction(*args, **kwargs)
+        fake_seconds[0] += 5 * 60                       # it took 5 minutes
+        return prediction
+    monkeypatch.setattr(tick, "make_prediction", slow_make_prediction)
+
+    report = run(conn, now=datetime(2024, 3, 15, 10, 58, tzinfo=timezone.utc))
+    assert count(conn, "prediction_runs") == 0
+    assert "has passed" in report.blocked[0]

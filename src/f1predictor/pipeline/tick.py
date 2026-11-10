@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -107,13 +108,23 @@ def run_tick(conn: sqlite3.Connection, now: datetime | None = None, dry_run: boo
     # Any timezone is accepted and converted; a time with none is refused
     # (pipeline/plan.as_utc), so a tick can't silently run hours off.
     now = as_utc(now or datetime.now(timezone.utc))
+    # The tick's clock as it runs: `now` plus the real time since the tick
+    # started. Fetching (with retries) and building a prediction can take
+    # minutes, so a tick that started at 13:58 may only check a 14:00 cutoff
+    # at 14:03. Elapsed time is added to `now` (not read from the wall
+    # clock), so tests and --now dry runs with a fake `now` still work.
+    started = time.monotonic()
+
+    def clock() -> datetime:
+        return now + timedelta(seconds=time.monotonic() - started)
+
     if jolpica_client is None or openf1_client is None:
         jolpica_client, openf1_client = make_clients()
     report = TickReport(now=to_utc_text(now), dry_run=dry_run)
 
     tick_id = _start(conn, report)                                   # record the tick; gap check
     _fetch(conn, now, report, jolpica_client, openf1_client)         # 1. fetch what's ready
-    _predict(conn, now, report, n_sims)                              # 2. predict live, checked
+    _predict(conn, now, clock, report, n_sims)                       # 2. predict live, checked
     _score(conn, now, report)                                        # 3. score / re-score
     _guardrail(conn, report)                                         # 3b. model vs baseline
     _raise_alerts(conn, now, report)                                 # 4. alerts, once each
@@ -182,15 +193,20 @@ def _fetch(conn: sqlite3.Connection, now: datetime, report: TickReport, jolpica_
                                   f"starting grid changed: {item_key}: {row['detail']}"))
 
 
-def _predict(conn: sqlite3.Connection, now: datetime, report: TickReport, n_sims: int | None) -> None:
-    """Step 2: make each due stage's prediction, check it, and log exactly that one."""
+def _predict(conn: sqlite3.Connection, now: datetime, clock, report: TickReport, n_sims: int | None) -> None:
+    """Step 2: make each due stage's prediction, check it, and log exactly that one.
+
+    clock() is the tick's current time (run_tick): the cutoff check uses it,
+    AFTER the slow part (training + simulating), so a prediction finished
+    after its session started is never logged as live.
+    """
     for action in plan(conn, now):
         if action.kind != "predict":
             continue
         try:
             prediction = make_prediction(conn, action.event_id, action.target,
                                          **({"n_sims": n_sims} if n_sims else {}))
-            problems = live_problems(conn, prediction, now)
+            problems = live_problems(conn, prediction, clock())
         except Exception as error:            # a prediction must never crash the tick
             prediction, problems = None, [f"prediction failed: {error}"]
         if problems:

@@ -40,18 +40,24 @@ The actions, in the order a weekend produces them:
 
 When is each stage due? (all times UTC, from the calendar)
 
-    pre_weekend  the previous race's result is in (round 1: within
-                 PRE_SEASON_WINDOW of FP1), and the first session hasn't started.
+    pre_weekend  the previous race's result is in AND its last re-check
+                 (RESULT_RECHECKS, 72h after the race) is done, so a late
+                 penalty or disqualification is already in the result the
+                 prediction learns from; or, if the re-check never happens,
+                 it's within LAST_CALL of the first session (round 1: within
+                 PRE_SEASON_WINDOW of FP1). The first session hasn't started.
     practice     every session before qualifying has been fetched, OR it's
                  within LAST_CALL (2h) of qualifying (predict with whatever practice
                  data exists: a cancelled or broken session mustn't block it).
                  No qualifying on the calendar at all: the same, up to the race.
-    post_quali   qualifying results are in, AND either OpenF1's starting grid
-                 and the qualifying lap times (Jolpica's, or OpenF1's laps:
-                 features/quali_times.py) are in, or it's within LAST_CALL of
-                 the race (then the predictor uses whatever there is: the
-                 qualifying order for a missing grid, blank gaps for missing
-                 times, which raises a 'weak_inputs' alert).
+    post_quali   qualifying results are in, AND OpenF1's starting grid and the
+                 qualifying lap times (Jolpica's, or OpenF1's laps:
+                 features/quali_times.py) are in. Or it's within LAST_CALL of
+                 the race and EITHER the qualifying results or the starting
+                 grid is in (then the predictor uses whatever there is: the
+                 qualifying order for a missing grid, the grid alone if
+                 Jolpica is late, blank gaps for missing times, which raises
+                 a 'weak_inputs' alert).
 """
 
 import sqlite3
@@ -216,6 +222,20 @@ def _previous_race_has_result(conn: sqlite3.Connection, season: int, rnd: int) -
         """, (season, rnd - 1)).fetchone()[0] == 1
 
 
+def _previous_result_settled(conn: sqlite3.Connection, season: int, rnd: int) -> bool:
+    """True once the previous round's LAST result re-check (72h) is done.
+
+    Why it matters: the pre-weekend prediction is frozen the moment it's
+    logged, and its model trains on every race before it, including the one
+    just run. Logged straight after that race's first result (as before
+    2026-11-10), it learned from a result that could still change: 2026 R21's
+    pre-weekend run was logged a day before R20's result was revised
+    (Lawson and Leclerc swapped 7th and 8th). After the last re-check, any
+    late penalty or disqualification is already in.
+    """
+    return _jolpica_done(conn, recheck_key(season, rnd - 1, RESULT_RECHECKS[-1]))
+
+
 def _scored_runs(conn: sqlite3.Connection, event_id: int) -> int:
     return conn.execute(
         "SELECT COUNT(*) FROM prediction_runs r WHERE r.event_id = ? "
@@ -326,9 +346,19 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
                      and ("Q" not in starts or starts[t] < starts["Q"])]
         stages = []
         if first_start is not None:
-            ready = (now >= first_start - PRE_SEASON_WINDOW) if previous is None else previous
-            stages.append(("pre_weekend", first_start, ready,
-                           "previous race result is in" if previous else "season opener is near"))
+            if previous is None:             # round 1: no previous race this season
+                ready, why = now >= first_start - PRE_SEASON_WINDOW, "season opener is near"
+            else:
+                # Wait for the previous result's last re-check
+                # (_previous_result_settled), but never past the last call:
+                # if the re-check keeps failing (or never ran, e.g. the
+                # pipeline went live mid-season), predict with what's in.
+                settled = previous and _previous_result_settled(conn, season, rnd)
+                last_call = now >= first_start - LAST_CALL
+                ready = previous and (settled or last_call)
+                why = ("previous race result is in and re-checked" if settled
+                       else "last call before the first session (previous result not re-checked)")
+            stages.append(("pre_weekend", first_start, ready, why))
         # The practice stage's cutoff is qualifying, or the race if qualifying
         # was cancelled and taken off the calendar (features/as_of.stage_cutoff;
         # before 2026-11-03 such a weekend got no practice prediction at all).
@@ -346,9 +376,16 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
             # OpenF1's laps once its qualifying session is fetched.
             times_in = jolpica_times_in(conn, event_id) or _openf1_done(conn, season, rnd, "Q")
             last_call = now >= starts["R"] - LAST_CALL
-            stages.append(("post_quali", starts["R"], quali_in and ((grid_in and times_in) or last_call),
-                           "last call before the race" if not (grid_in and times_in)
-                           else "starting grid and qualifying times are in"))
+            # Normally: wait for everything. At the last call: go with either
+            # the qualifying order (Jolpica) or the starting grid (OpenF1).
+            # Before 2026-11-10 the last call still required Jolpica's rows,
+            # so a Jolpica delay past race start meant no post-quali run at
+            # all, even with OpenF1's grid sitting in the database
+            # (features/as_of.grid_lineup uses the grid on its own).
+            everything_in = quali_in and grid_in and times_in
+            stages.append(("post_quali", starts["R"], everything_in or (last_call and (quali_in or grid_in)),
+                           "starting grid and qualifying times are in" if everything_in
+                           else "last call before the race"))
         for stage, cutoff, ready, why in stages:
             if _live_run_exists(conn, event_id, stage):
                 continue

@@ -24,8 +24,9 @@ Knobs that make things go wrong on purpose (all keyed by (season, round, X)):
     cancelled    a set: session X isn't on the calendar at all (Jolpica's
                  schedule and OpenF1's session list both leave it out).
     empty_until  {key: datetime}: the data is LATE. Before that time, OpenF1
-                 answers session X with an empty lap list, or (X = 'results')
-                 Jolpica's results leave the round out. Tests can change it.
+                 answers session X with an empty lap list, or (X = 'results'
+                 or 'qualifying') Jolpica's results or qualifying leave the
+                 round out. Tests can change it.
     sprint_rounds  a set of (season, round): those are sprint weekends
                  (SPRINT_OFFSETS), with sprint results on Jolpica's /sprint.
     tamper       {key: kind}: the data is BROKEN, until a test removes the key.
@@ -205,7 +206,8 @@ class FakeF1:
                      for rnd in range(1, len(CALENDAR[season]) + 1)
                      # A cancelled qualifying has no results, like the real API.
                      if (season, rnd, "Q") not in self.cancelled
-                     and (season < 2027 or self._published(season, rnd, "Q"))]
+                     and (season < 2027 or (self._published(season, rnd, "Q")
+                                            and not self._late(season, rnd, "qualifying")))]
         elif parts[1] == "sprint":
             races = [dict(self._schedule_race(season, rnd), SprintResults=self._sprint_results(season, rnd))
                      for rnd in range(1, len(CALENDAR[season]) + 1)

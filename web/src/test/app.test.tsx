@@ -31,7 +31,7 @@ describe("the shell", () => {
     expect(screen.getByText(/Still to come:/).parentElement).toHaveTextContent("Race (Sun 21 Mar, 15:00 UTC)");
     expect(screen.getByRole("tab", { name: "Pre-weekend" })).toHaveAttribute("aria-selected", "true");
     // The export time of the test data (scripts/export_test_data.py: the end of the simulation).
-    expect(screen.getByText("Data updated Tue 16 Mar, 12:00 UTC")).toBeInTheDocument();
+    expect(screen.getByText("Data updated Thu 18 Mar, 00:00 UTC")).toBeInTheDocument();
   });
 
   it("says 'loading' until the data arrives, not an empty page", () => {
