@@ -31,6 +31,7 @@ import pandas as pd
 import pytest
 
 from f1predictor.features.as_of import prediction_rows
+from f1predictor.ingest import openf1
 from f1predictor.features.race_features import POST_QUALI_FEATURES, build_race_features
 from f1predictor.simulate.probabilities import race_probabilities
 
@@ -117,6 +118,41 @@ def test_an_unmatched_car_on_the_grid_is_not_added_twice(conn, weekend):
                  (weekend["Q"], CARS["d"]))
     rows, _ = prediction_rows(conn, weekend["event"], "post_quali")
     assert "d" not in set(rows["driver_id"])
+
+
+def test_a_debutant_without_a_code_keeps_his_grid_slot(conn, weekend):
+    # Real case, Brazil 2026: Camara qualified and started 11th, but Jolpica
+    # gave him no code, so none of his car's entries could be matched to his
+    # id before the race. add_missing_starters then saw "a qualifier with no
+    # car on the grid" and added him as a pit-lane starter: grid 22 in the
+    # live post-quali prediction. Here 'd' plays him, starting from pole.
+    #
+    # Everyone else is matched by code (rule 3), as real drivers are.
+    for driver in ("a", "b", "c"):
+        code = driver.upper() * 3
+        conn.execute("UPDATE drivers SET code = ? WHERE driver_id = ?", (code, driver))
+        conn.execute("UPDATE session_entries SET acronym = ? WHERE session_id = ? AND car_number = ?",
+                     (code, weekend["Q"], CARS[driver]))
+    # 'd': no code, a real family name, and no matched entry anywhere this weekend.
+    conn.execute("UPDATE drivers SET code = NULL, given_name = 'Dan', family_name = 'Debut' "
+                 "WHERE driver_id = 'd'")
+    conn.execute("UPDATE session_entries SET driver_id = NULL, constructor_id = NULL, "
+                 "acronym = 'DEB', full_name = 'Dan DEBUT' WHERE car_number = ? "
+                 "AND session_id IN (?, ?)", (CARS["d"], weekend["FP3"], weekend["Q"]))
+    # Penalties put the debutant on pole and 'b' at the back.
+    conn.execute("UPDATE starting_grid SET position = 5 WHERE session_id = ? AND car_number = ?",
+                 (weekend["Q"], CARS["b"]))
+    conn.execute("UPDATE starting_grid SET position = 1 WHERE session_id = ? AND car_number = ?",
+                 (weekend["Q"], CARS["d"]))
+
+    # What the pipeline does once Jolpica's qualifying is in (pipeline/fetch.py).
+    openf1.match_entries(conn, weekend["Q"])
+
+    rows, meta = prediction_rows(conn, weekend["event"], "post_quali")
+    assert meta["lineup_source"] == "starting_grid"
+    d = rows.set_index("driver_id").loc["d"]
+    assert d["grid"] == 1                    # his real slot, not the back of the field
+    assert d["pit_lane_start"] == 0
 
 
 def test_pit_lane_start_is_the_same_input_in_training_and_live(conn, weekend):

@@ -223,6 +223,78 @@ def test_a_debutant_is_matched_from_this_events_qualifying(conn):
     assert tuple(row) == ("ryo_hirakawa", "haas")
 
 
+def add_code_less_qualifier(conn, quali_session_id: int, driver_id: str, given: str, family: str,
+                            constructor_id: str):
+    """A Jolpica qualifier whose drivers row has NO code (as Camara's had)."""
+    conn.execute("INSERT INTO drivers (driver_id, code, given_name, family_name) VALUES (?, NULL, ?, ?)",
+                 (driver_id, given, family))
+    conn.execute("INSERT INTO constructors (constructor_id, name) VALUES (?, ?) ON CONFLICT DO NOTHING",
+                 (constructor_id, constructor_id))
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, ?, ?, 1)", (quali_session_id, driver_id, constructor_id))
+
+
+def add_named_entry(conn, session_id: int, car: int, acronym: str, full_name: str):
+    conn.execute("INSERT INTO session_entries (session_id, car_number, acronym, full_name, team_name) "
+                 "VALUES (?, ?, ?, ?, 'Haas F1 Team')", (session_id, car, acronym, full_name))
+
+
+def test_a_debutant_without_a_code_is_matched_by_family_name(conn):
+    # Real case, Brazil 2026: Jolpica listed Rafael Camara in qualifying but
+    # gave him no code, so the acronym rule (3) couldn't see him. Car 51
+    # stayed unmatched until the race result, and the post-quali prediction
+    # put him at the back as a "pit-lane starter" although he started 11th.
+    event = add_event(conn, 2026, 20, "2026-11-08")
+    add_session(conn, event, "R")
+    quali = add_session(conn, event, "Q")
+    add_code_less_qualifier(conn, quali, "rafael_camara", "Rafael", "Camara", "haas")
+    add_named_entry(conn, quali, 51, "CAM", "Rafael CAMARA")
+
+    assert openf1.match_entries(conn, quali) == (1, 0)
+    row = conn.execute("SELECT driver_id, constructor_id FROM session_entries").fetchone()
+    assert tuple(row) == ("rafael_camara", "haas")   # team from his qualifying row
+
+
+def test_the_name_rule_ignores_accents_and_case_but_wants_whole_words(conn):
+    event = add_event(conn, 2026, 20, "2026-11-08")
+    add_session(conn, event, "R")
+    quali = add_session(conn, event, "Q")
+    add_code_less_qualifier(conn, quali, "new_perez", "Ana", "Pérez", "haas")
+    add_named_entry(conn, quali, 51, "PER", "Ana  PEREZ")        # no accent, extra space: a match
+    add_named_entry(conn, quali, 52, "LOP", "Ana LOPEREZ")       # 'perez' only inside a word: no match
+
+    openf1.match_entries(conn, quali)
+    rows = dict(conn.execute("SELECT car_number, driver_id FROM session_entries").fetchall())
+    assert rows == {51: "new_perez", 52: None}
+
+
+def test_the_name_rule_refuses_to_guess_between_two_drivers(conn):
+    # Two code-less qualifiers with the same family name: either could be
+    # the car, so neither is chosen (a wrong match would be scored wrongly).
+    event = add_event(conn, 2026, 20, "2026-11-08")
+    add_session(conn, event, "R")
+    quali = add_session(conn, event, "Q")
+    add_code_less_qualifier(conn, quali, "ann_smith", "Ann", "Smith", "haas")
+    add_code_less_qualifier(conn, quali, "bob_smith", "Bob", "Smith", "haas")
+    add_named_entry(conn, quali, 51, "SMI", "Ann SMITH")
+
+    assert openf1.match_entries(conn, quali) == (0, 1)
+
+
+def test_the_name_rule_never_matches_a_driver_who_has_a_code(conn):
+    # OpenF1's names can be wrong (2023 Hungary FP1 put junior drivers' names
+    # on the race cars). A driver WITH a code is only ever matched by that
+    # code, so a stray name can't hand his id to another car.
+    event = add_event(conn, 2026, 20, "2026-11-08")
+    add_session(conn, event, "R")
+    quali = add_session(conn, event, "Q")
+    add_qualifier(conn, quali, "gasly", "GAS", "alpine")
+    conn.execute("UPDATE drivers SET family_name = 'Gasly' WHERE driver_id = 'gasly'")
+    add_named_entry(conn, quali, 99, "XXX", "Pierre GASLY")    # name fits, acronym doesn't
+
+    assert openf1.match_entries(conn, quali) == (0, 1)
+
+
 def test_a_car_missing_from_the_driver_list_is_matched_from_the_same_weekend(conn):
     # Real case, Mexico City 2026 FP3: OpenF1's /drivers left out car 30, but
     # it set laps, so the loader made an entry with no acronym. Car 30 was

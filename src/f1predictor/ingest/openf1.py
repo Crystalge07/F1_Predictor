@@ -21,6 +21,7 @@ The module is laid out top to bottom as:
 
 import logging
 import sqlite3
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, NamedTuple
 
@@ -308,10 +309,10 @@ def match_sessions(conn: sqlite3.Connection, season: int, openf1_sessions: list[
 
 def _match_driver(conn: sqlite3.Connection, session: sqlite3.Row, session_id: int,
                   entry: sqlite3.Row) -> dict[str, Any]:
-    """Pass 1 of match_entries: driver rules 1-5 for ONE car (see its docstring).
+    """Pass 1 of match_entries: driver rules 1-5 (and 3b) for ONE car (see its docstring).
 
     Returns {"driver_id", "constructor_id", "exact"}. constructor_id is only
-    set by rules 1 and 3 (both name the team); otherwise None, for pass 2.
+    set by rules 1, 3 and 3b (all name the team); otherwise None, for pass 2.
     exact = matched by rule 1 (a result at this event), so its team can be
     taught to teammates in pass 2.
     """
@@ -361,6 +362,18 @@ def _match_driver(conn: sqlite3.Connection, session: sqlite3.Row, session_id: in
         return {"driver_id": qualified["driver_id"], "constructor_id": qualified["constructor_id"],
                 "exact": False}   # by acronym, so don't teach teammates from it
 
+    # Rule 3b: a debutant whose Jolpica row has NO code, so rule 3 can't see
+    # him. Real case, Brazil 2026: Jolpica listed Rafael Camara in qualifying
+    # with an empty code, his car 51 stayed unmatched until the race result,
+    # and the post-quali prediction put him at the back as a "pit-lane
+    # starter" although he started 11th. Before rule 4 on purpose: a driver
+    # who qualified at THIS event is better evidence than the last driver
+    # who happened to use the same acronym (who may have retired years ago).
+    by_name = _code_less_qualifier_by_name(conn, session["event_id"], entry["full_name"])
+    if by_name is not None:
+        return {"driver_id": by_name["driver_id"], "constructor_id": by_name["constructor_id"],
+                "exact": False}   # by name, so don't teach teammates from it
+
     # Rule 4: the acronym's most recent race driver up to this season.
     # Acronyms are unique among a season's race drivers, and we take the most
     # recent use, so an old driver with the same code can't win.
@@ -380,6 +393,59 @@ def _match_driver(conn: sqlite3.Connection, session: sqlite3.Row, session_id: in
     # Rule 5: nobody (driver_id None).
     return {"driver_id": by_acronym["driver_id"] if by_acronym else None,
             "constructor_id": None, "exact": False}   # team: pass 2
+
+
+def _fold_name(name: str | None) -> str:
+    """A name in a form two sources can be compared in.
+
+    'Nico HULKENBERG' (OpenF1) and 'Hülkenberg' (Jolpica) differ in case and
+    accents, so: split accented letters into letter + accent mark (NFKD),
+    drop the marks, lower-case (casefold), and squash runs of spaces.
+        'Sergio PEREZ' -> 'sergio perez';  'Pérez' -> 'perez'
+    """
+    if not name:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", name)
+    # combining() is non-zero for accent marks (the parts NFKD split off).
+    no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join(no_accents.casefold().split())
+
+
+def _code_less_qualifier_by_name(conn: sqlite3.Connection, event_id: int,
+                                 full_name: str | None) -> sqlite3.Row | None:
+    """Rule 3b of match_entries: the one qualifier at this event with no
+    Jolpica code whose family name ends OpenF1's full name, or None.
+
+    Deliberately narrow, because OpenF1's names can be wrong (2023 Hungary
+    FP1 listed junior-series drivers' names on the race drivers' cars):
+      * only drivers who QUALIFIED at this same event (Jolpica qualifying);
+      * only drivers with NO code: anyone with a code is rule 3's job, so a
+        wrong name can't override a code match or steal a regular's id;
+      * the family name must be the END of OpenF1's name, as whole words
+        ('Rafael CAMARA' ends with 'camara'; 'Andrea Kimi ANTONELLI' with
+        'antonelli'), compared without case or accents (_fold_name);
+      * exactly one candidate, or nothing: two matches would be a guess.
+    """
+    name = _fold_name(full_name)
+    if not name:
+        return None
+    candidates = conn.execute(
+        """
+        SELECT q.driver_id, q.constructor_id, d.family_name
+        FROM qualifying q
+        JOIN drivers d  ON d.driver_id = q.driver_id
+        JOIN sessions s ON s.session_id = q.session_id
+        WHERE s.event_id = ? AND (d.code IS NULL OR d.code = '')
+        """,
+        (event_id,),
+    ).fetchall()
+    matches = []
+    for row in candidates:
+        family = _fold_name(row["family_name"])
+        # Whole words only: 'camara' must not match '... decamara'.
+        if family and (name == family or name.endswith(" " + family)):
+            matches.append(row)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _fill_in_teams(conn: sqlite3.Connection, session: sqlite3.Row, entries: list[sqlite3.Row],
@@ -433,6 +499,10 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
            QUALIFYING. Catches a debutant before their first race result
            exists (real case: Hirakawa, Mexico City 2026), so the post-quali
            prediction has them. Their team is the one they qualified for.
+        3b. No code match, but exactly one driver who qualified at this
+           event has NO Jolpica code and his family name ends OpenF1's
+           full name (accents and case ignored). Real case: Camara, Brazil
+           2026, whose Jolpica row had no code. Team: the qualifying one.
         4. Acronym matches a driver's code, using their most recent result
            up to this season (covers practice before the race exists).
         5. Otherwise NULL (e.g. an FP1 rookie who has never raced, or a
@@ -454,7 +524,8 @@ def match_entries(conn: sqlite3.Connection, session_id: int) -> tuple[int, int]:
         (session_id,),
     ).fetchone()
     entries = conn.execute(
-        "SELECT car_number, acronym, team_name FROM session_entries WHERE session_id = ?",
+        # full_name is for rule 3b (matching a code-less debutant by name).
+        "SELECT car_number, acronym, team_name, full_name FROM session_entries WHERE session_id = ?",
         (session_id,),
     ).fetchall()
 

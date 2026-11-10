@@ -106,6 +106,7 @@ Two APIs that describe the same weekend differently have to be lined up before a
 1. The same car number in this event's official result (exact)
 2. A car OpenF1's driver list left out: the same car number's match from another session that weekend
 3. The acronym among drivers who qualified at this event (for a debut driver before his first race result exists)
+   - and if Jolpica gave that driver no code at all, his family name instead (accents and case ignored; only drivers who qualified here with no code, and only if exactly one fits)
 4. The acronym's most recent race driver up to this season
 
 A team is filled in from a matched teammate. A car that still can't be matched but is driving in the last session before qualifying is a race debutant with no Jolpica id yet: he's predicted under a temporary id (`provisional_2027_r1_car30`), and after the race the scorer swaps in his real id (`features/provisional.py`).
