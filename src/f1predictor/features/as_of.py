@@ -49,6 +49,7 @@ import numpy as np
 import pandas as pd
 
 from f1predictor.features.practice_pace import PRACTICE_PACE_COLUMNS
+from f1predictor.features.quali_times import qualifying_times
 from f1predictor.features.race_features import build_race_features
 
 STAGES = ("pre_weekend", "practice", "post_quali")
@@ -302,8 +303,13 @@ def stage_lineup(conn: sqlite3.Connection, info: dict, stage: str) -> tuple[pd.D
 # Putting it together
 # -----------------------------------------------------------------------------
 
-def upcoming_rows(conn: sqlite3.Connection, info: dict, stage: str) -> tuple[pd.DataFrame, str]:
-    """The race's rows in load_race_rows() format, with no result, for one stage."""
+def upcoming_rows(conn: sqlite3.Connection, info: dict, stage: str) -> tuple[pd.DataFrame, str, str | None]:
+    """The race's rows in load_race_rows() format, with no result, for one stage.
+
+    Returns (rows, lineup source, qualifying times source). The times source
+    is None before qualifying, else quali_times.SOURCE_* ('jolpica',
+    'openf1' or 'none').
+    """
     lineup, source = stage_lineup(conn, info, stage)
     if lineup.empty:
         raise ValueError(f"No lineup for event {info['event_id']} at stage {stage}")
@@ -312,12 +318,12 @@ def upcoming_rows(conn: sqlite3.Connection, info: dict, stage: str) -> tuple[pd.
         rows["grid"] = np.nan
 
     # Qualifying times, only once qualifying has happened (post_quali).
-    quali = pd.DataFrame(columns=["driver_id", "quali_position", "q1_ms", "q2_ms", "q3_ms"])
+    # Jolpica's, or OpenF1's best laps if Jolpica has published the order
+    # but no times yet (features/quali_times.py).
+    quali = pd.DataFrame(columns=["driver_id", "quali_position", "q1_ms", "q2_ms", "q3_ms", "openf1_best_ms"])
+    times_source = None
     if stage == "post_quali":
-        quali = pd.read_sql_query(
-            "SELECT driver_id, position AS quali_position, q1_ms, q2_ms, q3_ms "
-            "FROM qualifying WHERE session_id = ?",
-            conn, params=(info["quali_session_id"],))
+        quali, times_source = qualifying_times(conn, info["quali_session_id"])
     rows = rows.merge(quali, on="driver_id", how="left")
 
     rows = rows.assign(
@@ -332,9 +338,9 @@ def upcoming_rows(conn: sqlite3.Connection, info: dict, stage: str) -> tuple[pd.
         position_text=None,
     )
     # Numeric columns as floats, so NaN works everywhere.
-    for column in ["grid", "quali_position", "q1_ms", "q2_ms", "q3_ms"]:
+    for column in ["grid", "quali_position", "q1_ms", "q2_ms", "q3_ms", "openf1_best_ms"]:
         rows[column] = pd.to_numeric(rows[column], errors="coerce").astype(float)
-    return rows, source
+    return rows, source, times_source
 
 
 def prediction_rows(conn: sqlite3.Connection, event_id: int, stage: str) -> tuple[pd.DataFrame, dict]:
@@ -344,13 +350,15 @@ def prediction_rows(conn: sqlite3.Connection, event_id: int, stage: str) -> tupl
         rows  one row per driver, same columns as build_race_features() (the
               targets are NaN). Columns not known yet at this stage are NaN.
         meta  {"as_of_utc": cutoff, "lineup_source": "starting_grid" / ...,
-               "race_session_id": ...}: what the prediction log records.
+               "race_session_id": ..., "quali_times_source": ...}: what
+              the prediction log records, plus where the qualifying times
+              came from (features/quali_times.py; None before qualifying).
     """
     if stage not in STAGES:
         raise ValueError(f"Unknown stage {stage!r}; expected one of {STAGES}")
     info = event_info(conn, event_id)
     cutoff = stage_cutoff(info, stage)
-    upcoming, source = upcoming_rows(conn, info, stage)
+    upcoming, source, times_source = upcoming_rows(conn, info, stage)
 
     table = build_race_features(conn, upcoming=upcoming)
     rows = table[table["session_id"] == info["race_session_id"]].copy()
@@ -358,5 +366,7 @@ def prediction_rows(conn: sqlite3.Connection, event_id: int, stage: str) -> tupl
     rows[UNKNOWN_BEFORE[stage]] = np.nan
 
     meta = {"as_of_utc": cutoff, "lineup_source": source,
-            "race_session_id": info["race_session_id"]}
+            "race_session_id": info["race_session_id"],
+            # Where the qualifying times came from (post_quali only, else None).
+            "quali_times_source": times_source}
     return rows.reset_index(drop=True), meta

@@ -187,7 +187,7 @@ def test_earlier_races_are_the_same_with_or_without_the_predicted_race_swapped_i
     from f1predictor.features.as_of import event_info, upcoming_rows
 
     info = event_info(conn, weekend["event"])
-    upcoming, _ = upcoming_rows(conn, info, stage)
+    upcoming, _, _ = upcoming_rows(conn, info, stage)
     plain = build_race_features(conn)
     swapped = build_race_features(conn, upcoming=upcoming)
     earlier = lambda table: table[table["race_date"] < info["race_date"]].reset_index(drop=True)

@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from f1predictor import config
 from f1predictor.db.connection import get_connection, init_db
 from f1predictor.features.as_of import event_info, previous_race_lineup, STAGES
-from f1predictor.predict.stage import check_prediction, live_problems, model_version, make_prediction, write_run
+from f1predictor.predict.stage import check_prediction, input_warnings, live_problems, model_version, make_prediction, write_run
 
 DRY_RUN_DIR = config.DATA_DIR / "dry_runs"
 
@@ -74,6 +74,10 @@ def print_checks(conn, info, prediction) -> None:
     flagged = per_driver[per_driver > 0].sort_values(ascending=False)
     print(f"unknown feature values (of {n_features} per driver): "
           + (", ".join(f"{d} {int(n)}" for d, n in flagged.items()) if not flagged.empty else "none"))
+    if prediction.quali_times_source:
+        print(f"qualifying times from: {prediction.quali_times_source}")
+    for warning in input_warnings(prediction):
+        print(f"WARNING (logged anyway): {warning}")
     problems = check_prediction(conn, prediction)
     print("input checks: " + ("all passed" if not problems else "FAILED: " + "; ".join(problems)))
 

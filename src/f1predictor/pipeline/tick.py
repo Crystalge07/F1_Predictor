@@ -52,7 +52,7 @@ from f1predictor.evaluate.scorer import (record_scored_snapshot, result_changes,
 from f1predictor.pipeline.drift import drift_alerts
 from f1predictor.pipeline.fetch import run_fetches
 from f1predictor.pipeline.plan import Action, as_utc, parse_utc, plan, to_utc_text
-from f1predictor.predict.stage import live_problems, make_prediction, write_run
+from f1predictor.predict.stage import input_warnings, live_problems, make_prediction, write_run
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,8 @@ def _predict(conn: sqlite3.Connection, now: datetime, report: TickReport, n_sims
             report.alerts.append((f"blocked:{action.season}:{action.round}:{action.target}", f"not logged, {line}"))
             continue
         if report.dry_run:
-            report.predicted.append(f"{_label(action)} (passed checks; not logged: dry run)")
+            warned = "".join(f"; warning: {w}" for w in input_warnings(prediction))
+            report.predicted.append(f"{_label(action)} (passed checks; not logged: dry run){warned}")
             continue
         try:
             # write_run is one transaction: if it fails (disk error, or the
@@ -212,8 +213,15 @@ def _predict(conn: sqlite3.Connection, now: datetime, report: TickReport, n_sims
             report.alerts.append((f"blocked:{action.season}:{action.round}:{action.target}", f"not logged, {line}"))
             continue
         favourite = prediction.drivers.sort_values("p_win", ascending=False).iloc[0]
+        times = (f", qualifying times from {prediction.quali_times_source}"
+                 if prediction.quali_times_source else "")
         report.predicted.append(f"{_label(action)} -> live run {run_id} "
-                                f"(favourite {favourite.driver_id} {favourite.p_win:.0%})")
+                                f"(favourite {favourite.driver_id} {favourite.p_win:.0%}{times})")
+        # Logged, but with weak inputs: say so once (2026 R20 Brazil went
+        # out with no qualifying gaps and nobody was told).
+        for warning in input_warnings(prediction):
+            report.alerts.append((f"weak_inputs:{action.season}:{action.round}:{action.target}",
+                                  f"logged with weak inputs: {_label(action)}: {warning}"))
 
 
 def _score(conn: sqlite3.Connection, now: datetime, report: TickReport) -> None:

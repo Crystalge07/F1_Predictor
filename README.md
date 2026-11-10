@@ -137,7 +137,7 @@ The key rule is **no leakage**: a feature may only use information that existed 
 | Feature | How it's calculated | Stage |
 | --- | --- | --- |
 | `grid` | Official starting slot (pit-lane starts at the back) | Post-quali |
-| `quali_gap_pct` | Best of Q1/Q2/Q3 vs pole: `(best ÷ pole − 1) × 100`. 0 = on pole | Post-quali |
+| `quali_gap_pct` | Best of Q1/Q2/Q3 vs pole: `(best ÷ pole − 1) × 100`. 0 = on pole. Live, if Jolpica has the order but not the times yet, the best OpenF1 qualifying lap (deleted laps removed) | Post-quali |
 | `driver_form_finish` | Average finishing position over the driver's last 5 races (finishes only) | All |
 | `driver_form_grid` | Average starting slot over the driver's last 5 races | All |
 | `team_season_finish` | Average finish of the team's cars so far this season | All |

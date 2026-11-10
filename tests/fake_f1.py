@@ -32,7 +32,10 @@ Knobs that make things go wrong on purpose (all keyed by (season, round, X)):
                  OpenF1 session X: 'drop_driver' (d20 missing from drivers,
                  laps and stints) or 'half_laps' (only the first half of the
                  laps). X = 'results': 'drop_two' (the last two finishers are
-                 missing from Jolpica's race result).
+                 missing from Jolpica's race result). X = 'qualifying':
+                 'no_times' (Jolpica's qualifying has the order but no Q1/Q2/Q3
+                 times, as at 2026 R20 Brazil; the times "arrive" when a test
+                 removes the key).
 
 And one that isn't a fault, keyed by (season, round):
 
@@ -249,9 +252,10 @@ class FakeF1:
                 for p, d in enumerate(order(season, rnd, salt=3), start=1)]
 
     def _qualifying(self, season, rnd):
+        no_times = self.tamper.get((season, rnd, "qualifying")) == "no_times"
         return [{"number": str(self._number(season, rnd, "Q", d)), "position": str(p),
-                 "Driver": self._driver(season, rnd, "Q", d),
-                 "Constructor": self._constructor(d), "Q1": f"1:{20 + p * 0.1:06.3f}"}
+                 "Driver": self._driver(season, rnd, "Q", d), "Constructor": self._constructor(d),
+                 **({} if no_times else {"Q1": f"1:{20 + p * 0.1:06.3f}"})}
                 for p, d in enumerate(order(season, rnd, salt=1), start=1)]
 
     def _openf1(self, endpoint, params):

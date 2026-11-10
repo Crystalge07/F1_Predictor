@@ -86,6 +86,11 @@ class StagePrediction:
     drivers: pd.DataFrame
     # One row per driver per feature: driver_id, feature, value, contribution.
     features: pd.DataFrame
+    # Where the qualifying times came from (post_quali only; None before
+    # qualifying): 'jolpica', 'openf1' (Jolpica had the order but no times
+    # yet) or 'none'. Not written to the log; the tick reports it, and
+    # input_warnings() raises an alert when the gaps are missing.
+    quali_times_source: str | None = None
 
 
 # -----------------------------------------------------------------------------
@@ -219,6 +224,7 @@ def make_prediction(conn: sqlite3.Connection, event_id: int, stage: str,
         n_training_races=int(history["session_id"].nunique()),
         drivers=drivers.sort_values("predicted_rank").reset_index(drop=True),
         features=explanation,
+        quali_times_source=meta.get("quali_times_source"),
     )
 
 
@@ -329,6 +335,31 @@ def check_prediction(conn: sqlite3.Connection, prediction: StagePrediction) -> l
         if changes > MAX_LINEUP_CHANGES:
             problems.append(f"{changes} driver changes vs the last race (more than {MAX_LINEUP_CHANGES})")
     return problems
+
+
+# A post-quali prediction with the qualifying gap missing for more than this
+# share of the drivers gets an alert (input_warnings). A driver or two with no
+# time is normal (didn't set one); most of the field is not (2026 R20 Brazil:
+# all 22, because Jolpica published the order before the times).
+MAX_MISSING_QUALI_GAP_SHARE = 0.5
+
+
+def input_warnings(prediction: StagePrediction) -> list[str]:
+    """Things worth an alert about a prediction that is still fine to log.
+
+    Unlike check_prediction's problems these don't block the run: a post-quali
+    prediction without qualifying gaps is weaker, but much better than none
+    (the grid still carries most of it), and waiting is already done by the
+    planner (no prediction before LAST_CALL while no times are in anywhere).
+    """
+    warnings = []
+    if prediction.stage == "post_quali":
+        gap = prediction.features[prediction.features["feature"] == "quali_gap_pct"]["value"]
+        missing = int(gap.isna().sum())
+        if len(gap) and missing / len(gap) > MAX_MISSING_QUALI_GAP_SHARE:
+            warnings.append(f"qualifying gap missing for {missing} of {len(gap)} drivers "
+                            f"(qualifying times: {prediction.quali_times_source})")
+    return warnings
 
 
 def live_problems(conn: sqlite3.Connection, prediction: StagePrediction, now: datetime) -> list[str]:

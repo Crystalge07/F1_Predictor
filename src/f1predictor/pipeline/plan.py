@@ -47,8 +47,11 @@ When is each stage due? (all times UTC, from the calendar)
                  data exists: a cancelled or broken session mustn't block it).
                  No qualifying on the calendar at all: the same, up to the race.
     post_quali   qualifying results are in, AND either OpenF1's starting grid
-                 is in or it's within LAST_CALL of the race (then the predictor
-                 falls back to qualifying order, see features/as_of.py).
+                 and the qualifying lap times (Jolpica's, or OpenF1's laps:
+                 features/quali_times.py) are in, or it's within LAST_CALL of
+                 the race (then the predictor uses whatever there is: the
+                 qualifying order for a missing grid, blank gaps for missing
+                 times, which raises a 'weak_inputs' alert).
 """
 
 import sqlite3
@@ -57,6 +60,7 @@ from datetime import datetime, timedelta, timezone
 
 from f1predictor.evaluate.scorer import result_snapshot, scored_snapshot
 from f1predictor.features.as_of import PRE_QUALI_SESSION_TYPES
+from f1predictor.features.quali_times import jolpica_times_in
 
 # How long each kind of session usually lasts. The data can't be fetched
 # before the session ends; red flags can make a session run long, which the
@@ -288,10 +292,20 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
                                           ("R", "results", "results")]:
             if session_type in starts:
                 ready_at = starts[session_type] + SESSION_LENGTH[session_type] + FETCH_DELAY
-                if now >= ready_at and not _has_rows(conn, table, event_id, session_type):
-                    act("fetch_jolpica", part, f"{session_type} ended; Jolpica {part} not in yet")
+                missing = None
+                if not _has_rows(conn, table, event_id, session_type):
+                    missing = f"Jolpica {part}"
+                elif session_type == "Q" and not jolpica_times_in(conn, event_id):
+                    # Jolpica can publish the qualifying ORDER first and the
+                    # lap times a day or two later (2026 R20 Brazil). Keep
+                    # fetching until the times are in: the live prediction
+                    # can use OpenF1's meanwhile (features/quali_times.py),
+                    # but training on this race later needs Jolpica's.
+                    missing = "Jolpica qualifying times"
+                if now >= ready_at and missing:
+                    act("fetch_jolpica", part, f"{session_type} ended; {missing} not in yet")
                     if now >= ready_at + JOLPICA_LATE:
-                        act("late", part, f"Jolpica {part} still missing "
+                        act("late", part, f"{missing} still missing "
                                           f"{JOLPICA_LATE.total_seconds() / 3600:.0f}h after {session_type}; still retrying")
         # Re-checks of a result that is already in (RESULT_RECHECKS). Marked
         # done in ingestion_log by pipeline/fetch.py once the refetch worked;
@@ -328,9 +342,13 @@ def plan(conn: sqlite3.Connection, now: datetime) -> list[Action]:
         if "R" in starts:
             quali_in = _has_rows(conn, "qualifying", event_id, "Q")
             grid_in = _openf1_done(conn, season, rnd, "grid")
+            # Qualifying lap times (for the gap to pole): Jolpica's, or
+            # OpenF1's laps once its qualifying session is fetched.
+            times_in = jolpica_times_in(conn, event_id) or _openf1_done(conn, season, rnd, "Q")
             last_call = now >= starts["R"] - LAST_CALL
-            stages.append(("post_quali", starts["R"], quali_in and (grid_in or last_call),
-                           "starting grid is in" if grid_in else "last call before the race (qualifying order)"))
+            stages.append(("post_quali", starts["R"], quali_in and ((grid_in and times_in) or last_call),
+                           "last call before the race" if not (grid_in and times_in)
+                           else "starting grid and qualifying times are in"))
         for stage, cutoff, ready, why in stages:
             if _live_run_exists(conn, event_id, stage):
                 continue

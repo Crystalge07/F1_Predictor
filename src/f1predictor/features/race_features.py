@@ -177,6 +177,13 @@ def _add_same_weekend_features(df: pd.DataFrame) -> pd.DataFrame:
     # Best lap = fastest of Q1/Q2/Q3. min(axis=1) works across the columns of
     # each row and skips NaNs, so a Q1 knockout just uses their Q1 time.
     df["best_quali_ms"] = df[["q1_ms", "q2_ms", "q3_ms"]].min(axis=1)
+    # A live race whose qualifying times aren't on Jolpica yet: its best
+    # OpenF1 lap instead (features/quali_times.py). Only the race being
+    # predicted ever has this column; history rows get NaN from the concat
+    # in build_race_features, so for them nothing changes.
+    if "openf1_best_ms" in df:
+        df["best_quali_ms"] = (pd.to_numeric(df["best_quali_ms"], errors="coerce")
+                               .fillna(pd.to_numeric(df["openf1_best_ms"], errors="coerce")))
     # The fastest lap anyone set that weekend. transform("min") gives every
     # row in the race the same value, so we can divide row by row.
     pole_ms = df.groupby("session_id")["best_quali_ms"].transform("min")

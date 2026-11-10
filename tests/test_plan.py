@@ -122,8 +122,8 @@ def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
     assert round2(conn, at("2027-03-13T16:31")) == [("fetch_session", "Q"), ("fetch_jolpica", "qualifying")]
     # Qualifying results in, but no starting grid yet: wait...
     fetched(conn, "Q")
-    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
-                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position, q1_ms) "
+                 "VALUES (?, 'a', 't', 1, 80000)", (ids[2]["Q"],))
     # (but keep asking OpenF1 for the grid)...
     assert round2(conn, at("2027-03-14T09:00")) == [("fetch_session", "grid")]
     # ...until the last call (falls back to qualifying order)...
@@ -132,6 +132,41 @@ def test_post_quali_needs_qualifying_then_the_grid_or_last_call(conn, ids):
     fetched(conn, "grid")
     assert round2(conn, at("2027-03-14T09:00")) == [
         ("fetch_session", "grid"), ("predict", "post_quali")]
+
+
+def test_qualifying_order_without_times(conn, ids):
+    # 2026 R20 Brazil: Jolpica published the qualifying ORDER, no times.
+    event = ids[2]["event"]
+    for stage in ("pre_weekend", "practice"):
+        add_live_run(conn, event, stage)
+    fetched(conn, "FP1", "FP2", "FP3", "grid")
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    # No times anywhere (OpenF1's qualifying not fetched either): keep asking
+    # Jolpica for them, and don't predict yet...
+    # (The grid refresh waits for OpenF1's qualifying, as before.)
+    assert round2(conn, at("2027-03-14T09:00")) == [("fetch_session", "Q"), ("fetch_jolpica", "qualifying")]
+    # ...unless it's the last call: predict with what there is.
+    assert ("predict", "post_quali") in round2(conn, at("2027-03-14T13:05"))
+    # OpenF1's qualifying laps are in: predict (with those times), and keep
+    # asking Jolpica for its own (needed later, for training).
+    fetched(conn, "Q")
+    assert round2(conn, at("2027-03-14T09:00")) == [
+        ("fetch_session", "grid"), ("fetch_jolpica", "qualifying"), ("predict", "post_quali")]
+    # Jolpica's times arrive: no more fetching it.
+    conn.execute("UPDATE qualifying SET q1_ms = 80000 WHERE session_id = ?", (ids[2]["Q"],))
+    assert ("fetch_jolpica", "qualifying") not in round2(conn, at("2027-03-14T09:00"))
+
+
+def test_jolpica_qualifying_times_late_after_48h(conn, ids):
+    for stage in ("pre_weekend", "practice", "post_quali"):
+        add_live_run(conn, ids[2]["event"], stage)
+    fetched(conn, "FP1", "FP2", "FP3", "Q", "grid", "R")
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
+                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    add_result(conn, ids[2]["R"])
+    planned = round2(conn, at("2027-03-15T17:00"))       # Q ended Sat 16:30 + 48h
+    assert ("fetch_jolpica", "qualifying") in planned and ("late", "qualifying") in planned
 
 
 def test_a_stage_whose_cutoff_passed_is_missed_not_predicted_late(conn, ids):
@@ -148,8 +183,8 @@ def test_score_once_the_result_is_in(conn, ids):
     for stage in ("pre_weekend", "practice", "post_quali"):
         add_live_run(conn, event, stage)
     fetched(conn, "FP1", "FP2", "FP3", "Q", "grid")
-    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
-                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position, q1_ms) "
+                 "VALUES (?, 'a', 't', 1, 80000)", (ids[2]["Q"],))
     # Race over (+2h +30m): fetch OpenF1 and Jolpica; no result yet, so no scoring.
     assert round2(conn, at("2027-03-14T17:31")) == [("fetch_session", "R"), ("fetch_jolpica", "results")]
     fetched(conn, "R")
@@ -215,8 +250,8 @@ def test_jolpica_results_missing_two_days_are_late_but_still_fetched(conn, ids):
     for stage in ("pre_weekend", "practice", "post_quali"):
         add_live_run(conn, ids[2]["event"], stage)
     fetched(conn, "FP1", "FP2", "FP3", "Q", "grid", "R")
-    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
-                 "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    conn.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position, q1_ms) "
+                 "VALUES (?, 'a', 't', 1, 80000)", (ids[2]["Q"],))
     planned = round2(conn, at("2027-03-16T18:00"))     # race over Sun 17:30; now Tue 18:00
     assert ("fetch_jolpica", "results") in planned and ("late", "results") in planned
 
@@ -230,8 +265,8 @@ def scored_round2(c, ids):
     from f1predictor.evaluate.scorer import record_scored_snapshot, result_snapshot
     run_ids = [add_live_run(c, ids[2]["event"], stage) for stage in ("pre_weekend", "practice", "post_quali")]
     fetched(c, "FP1", "FP2", "FP3", "Q", "grid", "R")
-    c.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position) "
-              "VALUES (?, 'a', 't', 1)", (ids[2]["Q"],))
+    c.execute("INSERT INTO qualifying (session_id, driver_id, constructor_id, position, q1_ms) "
+              "VALUES (?, 'a', 't', 1, 80000)", (ids[2]["Q"],))
     add_result(c, ids[2]["R"])
     for run_id in run_ids:
         c.execute("INSERT INTO scores (run_id, metric, model_value, scored_at_utc) "
