@@ -168,7 +168,7 @@ describe("the how-we-did card", () => {
     });
     const winnerChance = final.drivers.find((d) => d.driver_id === podium[0].driver_id)!.p_win;
     expect(card).toHaveTextContent(`a ${Math.round(winnerChance * 100)}% chance to win`);
-    expect(within(card as HTMLElement).getByRole("link", { name: /full result/ })).toHaveAttribute("href", "/races/2027-02");
+    expect(within(card as HTMLElement).getByRole("link", { name: /full result/ })).toHaveAttribute("href", "/results/2027-02");
   });
 
   it("is gone two days later", async () => {

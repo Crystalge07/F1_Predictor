@@ -22,8 +22,8 @@ export function About() {
       <p>
         Each stage uses only what was known at that moment: the cutoff is the start of the next session. A model
         (XGBoost) predicts where each driver finishes, a second one each driver's chance of retiring, and 10,000
-        simulated races turn those into win, podium and points chances. The <Link to="/why">Why</Link> page breaks each
-        prediction into the factors that moved it.
+        simulated races turn those into win, podium and points chances. Click any driver in a prediction to see{" "}
+        <Link to="/why">why</Link>: the factors that moved their prediction.
       </p>
 
       <h2>Kept honest</h2>
@@ -32,7 +32,7 @@ export function About() {
         <li>The database refuses to change or delete a logged live prediction.</li>
         <li>After the race, every prediction is scored against a simple baseline that uses the same information: the championship order, the practice order, or the starting grid.</li>
         <li>
-          The <Link to="/scorecard">Scorecard</Link> keeps three kinds of results apart: the 2027 season, predicted
+          The <Link to="/results/stats">Results stats</Link> keep three kinds of results apart: the 2027 season, predicted
           live (the real test); the last four races of 2026, predicted live as a rehearsal; and backtests, which replay
           past races after the fact and are only a check that the pipeline works.
         </li>

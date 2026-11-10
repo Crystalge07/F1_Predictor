@@ -1,4 +1,4 @@
-// Past races and the launch polish (About, tab titles, skip link), against
+// Results (the race list and one race), old addresses, and the launch polish (About, tab titles, skip link), against
 // the simulated test world: rounds 1 and 2 finished, round 3 not yet.
 
 import { render, screen, within } from "@testing-library/react";
@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { AppRoutes } from "../App";
 import { SiteDataProvider } from "../data";
 import { liveRuns } from "../race";
-import type { Race } from "../types";
+import type { Index, Race, Scorecard } from "../types";
 import { serveTestData, testFile } from "./serve";
 
 const round2 = testFile<Race>("races/2027-02.json");
@@ -25,19 +25,54 @@ function renderAt(path: string, overrides: Parameters<typeof serveTestData>[0] =
 }
 
 describe("the list", () => {
-  it("lists the finished races, newest first, and opens one", async () => {
-    renderAt("/races");
+  it("lists the finished races, newest first, with how the final prediction did, and opens one", async () => {
+    renderAt("/results");
     const links = await screen.findAllByRole("link", { name: /^2027 R\d/ });
     // Round 3 hasn't been raced: not a past race yet.
-    expect(links.map((l) => l.textContent)).toEqual(["2027 R2 · Test GP 2live", "2027 R1 · Test GP 1live"]);
+    expect(links.map((l) => l.querySelector(".race-list-name")!.textContent)).toEqual(["2027 R2 · Test GP 2", "2027 R1 · Test GP 1"]);
+    // The score line comes from the scorecard file: round 2's after-qualifying scores.
+    const card = testFile<Scorecard>("scorecard.json");
+    const m = card.groups[0].per_race.post_quali!.find((r) => r.round === 2)!.metrics;
+    expect(links[0]).toHaveTextContent(`After qualifying: ${m.position_mae.model!.toFixed(1)} places off`);
+    expect(links[0]).toHaveTextContent(`podium ${Math.round(m.podium_hits.model! * 3)}/3`);
     await userEvent.setup().click(links[0]);
+    expect(await screen.findByRole("heading", { level: 1, name: "Test GP 2" })).toBeInTheDocument();
+  });
+
+  it("shows live races only, unless backtest replays are switched on", async () => {
+    // Round 1 relabelled as a backtest-only race.
+    const index = testFile<Index>("index.json");
+    const r1 = index.seasons[0].races[0];
+    r1.backtest_stages = r1.live_stages;
+    r1.live_stages = [];
+    renderAt("/results", { "index.json": { body: JSON.stringify(index) } });
+    const names = async () =>
+      (await screen.findAllByRole("link", { name: /^2027 R\d/ })).map((l) => l.querySelector(".race-list-name")!.textContent);
+    expect(await names()).toEqual(["2027 R2 · Test GP 2"]);
+    await userEvent.setup().click(screen.getByRole("checkbox", { name: /backtest replays/ }));
+    expect(await names()).toEqual(["2027 R2 · Test GP 2", "2027 R1 · Test GP 1"]);
+  });
+});
+
+describe("old addresses", () => {
+  it.each([
+    ["/scorecard", "Model against baseline"],
+    ["/races", "Test GP 2"],
+  ])("%s lands on its Results page", async (path, text) => {
+    renderAt(path);
+    expect(await screen.findByRole("heading", { level: 1, name: "Results" })).toBeInTheDocument();
+    expect(await screen.findAllByText(new RegExp(text))).not.toHaveLength(0);
+  });
+
+  it("/races/<race> lands on that race", async () => {
+    renderAt("/races/2027-02");
     expect(await screen.findByRole("heading", { level: 1, name: "Test GP 2" })).toBeInTheDocument();
   });
 });
 
 describe("one race", () => {
   it("lines every stage's prediction up with the result, debutants included", async () => {
-    const { container } = renderAt("/races/2027-02");
+    const { container } = renderAt("/results/2027-02");
     await screen.findByText("Predicted against the result");
     const rows = [...container.querySelectorAll("table.comparison tbody tr")];
     // In finishing order.
@@ -62,13 +97,13 @@ describe("one race", () => {
   });
 
   it("names the predicted drivers who didn't start", async () => {
-    renderAt("/races/2027-02");
+    renderAt("/results/2027-02");
     // The pre-weekend prediction copied the last race's lineup: d05 and d12.
     expect(await screen.findByText("Pre-weekend also predicted Test D05, Test D12, who didn't start.")).toBeInTheDocument();
   });
 
   it("shows the race's scores, model against baseline", async () => {
-    renderAt("/races/2027-02");
+    renderAt("/results/2027-02");
     const table = await screen.findByRole("table", { name: "This race's scores, model against baseline" });
     const post = liveRuns(round2).find((r) => r.stage === "post_quali")!.scores!;
     const row = within(table).getByRole("row", { name: /After qualifying/ });
@@ -81,7 +116,7 @@ describe("one race", () => {
     const replay = structuredClone(race.runs.find((r) => r.stage === "post_quali")!);
     replay.mode = "backtest";
     race.runs.push(replay);
-    renderAt("/races/2027-02", { "races/2027-02.json": { body: JSON.stringify(race) } });
+    renderAt("/results/2027-02", { "races/2027-02.json": { body: JSON.stringify(race) } });
     await userEvent.setup().click(await screen.findByRole("tab", { name: "Backtest" }));
     expect(screen.getByRole("note")).toHaveTextContent(/in-sample: a pipeline check, not a test result/);
     expect(screen.getByRole("columnheader", { name: "After qualifying" })).toBeInTheDocument();
@@ -89,9 +124,9 @@ describe("one race", () => {
   });
 
   it("handles a race that hasn't finished, and one that doesn't exist", async () => {
-    renderAt("/races/2027-03");
+    renderAt("/results/2027-03");
     expect(await screen.findByText(/The result isn't in yet/)).toBeInTheDocument();
-    renderAt("/races/1999-01");
+    renderAt("/results/1999-01");
     expect(await screen.findByRole("heading", { level: 1, name: "Race not found" })).toBeInTheDocument();
   });
 });
@@ -104,12 +139,12 @@ describe("launch polish", () => {
   });
 
   it("names each page in the browser tab", async () => {
-    renderAt("/scorecard");
-    await screen.findByRole("heading", { level: 1, name: "Scorecard" });
-    expect(document.title).toBe("Scorecard · F1 Predictor");
-    renderAt("/races/2027-01");
+    renderAt("/results/stats");
+    await screen.findByRole("heading", { name: "Model against baseline" });
+    expect(document.title).toBe("Stats · F1 Predictor");
+    renderAt("/results/2027-01");
     await screen.findByRole("heading", { level: 1, name: "Test GP 1" });
-    expect(document.title).toBe("Past race · F1 Predictor");
+    expect(document.title).toBe("Race result · F1 Predictor");
   });
 
   it("lets keyboard users skip the menu", async () => {

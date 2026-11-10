@@ -2,7 +2,7 @@
 // days after a race (weekend.RECENT_RESULT_HOURS). It puts the real podium
 // next to the podium our final prediction (the last stage logged before the
 // race) called, plus that prediction's headline scores, and links to the full
-// comparison under Past races.
+// comparison under Results.
 //
 // Before the official result is in, it says so instead.
 
@@ -109,7 +109,7 @@ function ResultBody({ race, raceKey, final }: { race: Race; raceKey: string; fin
         )}
       </ul>
       <p className="small" style={{ marginBottom: 0 }}>
-        <Link to={`/races/${raceKey}`}>Every stage next to the full result →</Link>
+        <Link to={`/results/${raceKey}`}>Every stage next to the full result →</Link>
       </p>
     </>
   );

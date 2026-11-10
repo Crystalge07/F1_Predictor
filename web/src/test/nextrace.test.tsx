@@ -207,3 +207,16 @@ describe("spreadLabels (the line-end driver codes)", () => {
     expect(ys[0]).toBe(10); // a label with room stays where its line ends
   });
 });
+
+describe("a driver's name", () => {
+  it("opens the Why page for that driver at that stage", async () => {
+    serveWithNext(2);
+    renderPage();
+    const run = round2.runs.find((r) => r.mode === "live" && r.stage === "post_quali")!;
+    const first = run.drivers[0];
+    const link = await screen.findByRole("link", { name: round2.drivers[first.driver_id].name });
+    expect(link).toHaveAttribute("href", `/why?race=2027-02&stage=post_quali&driver=${first.driver_id}`);
+    await userEvent.setup().click(link);
+    expect(await screen.findByRole("heading", { level: 1, name: "Why" })).toBeInTheDocument();
+  });
+});

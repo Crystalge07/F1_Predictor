@@ -8,7 +8,7 @@
 import { useState } from "react";
 import { useRace, useSiteData } from "../data";
 import { formatUtc, STAGE_NAMES } from "../format";
-import { CUTOFF_SESSION, liveRuns } from "../race";
+import { CUTOFF_SESSION, liveRuns, raceKey } from "../race";
 import type { Race, Stage } from "../types";
 import { recentRace } from "../weekend";
 import { ErrorBox, Loading } from "../components/Status";
@@ -16,7 +16,6 @@ import { PredictionTable } from "../components/PredictionTable";
 import { OddsChart } from "../components/OddsChart";
 import { WeekendTracker } from "../components/WeekendTracker";
 import { RecentResult } from "../components/RecentResult";
-import { raceKey } from "./PastRaces";
 
 export function NextRace() {
   const site = useSiteData();
@@ -120,7 +119,7 @@ function RaceView({ race, now, dataTime }: { race: Race; now: Date; dataTime: Da
             </h2>
             <p className="muted small" style={{ marginTop: 0 }}>
               Logged {formatUtc(run.logged_at_utc)}, before {CUTOFF_SESSION[run.stage]} ({formatUtc(run.as_of_utc)}).
-              Never edited since. Chances come from 10,000 simulated races.
+              Never edited since. Chances come from 10,000 simulated races. Click a driver to see why.
             </p>
             <PredictionTable race={race} run={run} />
           </div>

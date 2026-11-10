@@ -1,6 +1,8 @@
-// Scorecard: how good the predictions were, against the simple baseline of
-// each stage. One scorecard at a time (2027 live, the 2026 rehearsal, a
-// backtest...): they're never added together, and each shows its label.
+// The stats side of the Results tab (#/results/stats): how good the
+// predictions were, against the simple baseline of each stage. One scorecard
+// at a time (2027 live, the 2026 rehearsal, a backtest...): they're never
+// added together, and each shows its label. The live one comes first in the
+// file, so it's the default; backtests are picked from the menu.
 
 import { useState } from "react";
 import { useSiteData } from "../data";
@@ -15,7 +17,7 @@ import { CalibrationChart } from "../components/CalibrationChart";
 
 const groupKey = (g: ScorecardGroup) => `${g.season}-${g.mode}`;
 
-export function Scorecard() {
+export function Stats() {
   const site = useSiteData();
   const [chosen, setChosen] = useState<string | null>(null);
   if (site.state === "loading") return <Loading />;
@@ -26,8 +28,7 @@ export function Scorecard() {
   // backtest, newest season first), so that's the default.
   const group = groups.find((g) => groupKey(g) === chosen) ?? groups[0];
   return (
-    <section>
-      <h1>Scorecard</h1>
+    <>
       <p className="muted">How close the predictions came, against the simple baseline each stage has to beat.</p>
       {!group ? (
         <p>Nothing has been scored yet: the first scores appear after the first predicted race.</p>
@@ -50,7 +51,7 @@ export function Scorecard() {
           <GroupView key={groupKey(group)} group={group} />
         </>
       )}
-    </section>
+    </>
   );
 }
 

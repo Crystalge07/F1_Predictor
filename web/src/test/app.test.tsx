@@ -40,11 +40,12 @@ describe("the shell", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading data");
   });
 
-  it("moves between the four pages and marks the current one", async () => {
+  it("moves between the pages and marks the current one", async () => {
     serveTestData();
     renderApp();
     const user = userEvent.setup();
-    for (const [link, heading] of [["Why", "Why"], ["Scorecard", "Scorecard"], ["Past races", "Past races"]]) {
+    expect(screen.getAllByRole("link", { name: /^(Next race|Results|About)$/ })).toHaveLength(3);
+    for (const [link, heading] of [["Results", "Results"], ["About", "How it works"]]) {
       await user.click(screen.getByRole("link", { name: link }));
       expect(screen.getByRole("heading", { level: 1, name: heading })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: link })).toHaveClass("active");
@@ -74,6 +75,6 @@ describe("when the data can't be used, the page says so", () => {
     renderApp();
     expect(await screen.findByRole("alert")).toHaveTextContent(message);
     // The rest of the page still works: the menu is there.
-    expect(screen.getByRole("link", { name: "Scorecard" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Results" })).toBeInTheDocument();
   });
 });

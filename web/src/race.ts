@@ -2,6 +2,11 @@
 
 import type { Race, Run, Stage } from "./types";
 
+/** "2026-05": a race's key in addresses and file names. */
+export function raceKey(season: number, round: number) {
+  return `${season}-${String(round).padStart(2, "0")}`;
+}
+
 export const STAGE_ORDER: Stage[] = ["pre_weekend", "practice", "post_quali"];
 
 /** The race's LIVE runs, in weekend order (pre-weekend -> after qualifying).

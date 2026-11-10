@@ -1,4 +1,4 @@
-// The Scorecard page, against the simulated test world's export (one
+// The Results tab's Stats (the scorecard), against the simulated test world's export (one
 // scorecard: 2027 live, two races) and a hand-made second one.
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
@@ -18,7 +18,7 @@ function renderScorecard(scorecard: Scorecard = card) {
   serveTestData({ "scorecard.json": { body: JSON.stringify(scorecard) } });
   return render(
     <SiteDataProvider>
-      <MemoryRouter initialEntries={["/scorecard"]}>
+      <MemoryRouter initialEntries={["/results/stats"]}>
         <AppRoutes />
       </MemoryRouter>
     </SiteDataProvider>,

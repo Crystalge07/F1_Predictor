@@ -2,8 +2,9 @@
 // chances of each outcome. Percentages are text first; the thin bar under
 // each is a quick visual of the same number (one hue: it's magnitude).
 
+import { Link } from "react-router-dom";
 import type { Race, Run } from "../types";
-import { ANCHOR, driverName, formatPct, teamName } from "../race";
+import { ANCHOR, driverName, formatPct, raceKey, teamName } from "../race";
 
 function Pct({ value, label }: { value: number; label: string }) {
   return (
@@ -40,9 +41,16 @@ export function PredictionTable({ race, run }: { race: Race; run: Run }) {
               <tr key={d.driver_id}>
                 <td className="left rank">{d.predicted_rank}</td>
                 <td className="left">
-                  <span className="driver-name">{driverName(race, d.driver_id)}</span>
+                  {/* The name opens the Why page for this driver at this stage. */}
+                  <Link
+                    className="driver-name driver-link"
+                    to={`/why?race=${raceKey(race.season, race.round)}&stage=${run.stage}&driver=${encodeURIComponent(d.driver_id)}`}
+                    title="Why this prediction?"
+                  >
+                    {driverName(race, d.driver_id)}
+                  </Link>
                   {info?.provisional && (
-                    <span className="tag" title="Making his debut: predicted under a temporary id until his first result">
+                    <span className="tag" title="Making their debut: predicted under a temporary id until their first result">
                       debut
                     </span>
                   )}

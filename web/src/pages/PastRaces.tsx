@@ -1,23 +1,24 @@
-// Past races: every race with a result, and for each one, what every stage
-// predicted next to what actually happened, plus that race's scores.
+// The race side of the Results tab: every race with a result, and for each
+// one, what every stage predicted next to what actually happened.
 //
-//   #/races           the list, newest first
-//   #/races/2026-19   one race
+//   #/results          the list (RaceList), newest first: one line per race
+//                      with how its final prediction did
+//   #/results/2026-19  one race (PastRace)
+//
+// Live predictions only by default. Backtest replays (past races re-run
+// after the fact, in-sample) can be switched on, and are always labelled.
 
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useRace, useSiteData } from "../data";
 import { STAGE_NAMES } from "../format";
-import { driverName, STAGE_ORDER, teamName } from "../race";
-import type { Index, Mode, Race, Run } from "../types";
+import { driverName, raceKey, STAGE_ORDER, teamName } from "../race";
+import { BASELINE_NAMES } from "../scorecard";
+import type { Index, Mode, Race, RaceScores, Run, Scorecard, Stage } from "../types";
 import { ErrorBox, Loading } from "../components/Status";
 
 // Column headers on a phone, where the full names don't fit side by side.
 const SHORT_STAGE = { pre_weekend: "Pre", practice: "Practice", post_quali: "Quali" } as const;
-
-export function raceKey(season: number, round: number) {
-  return `${season}-${String(round).padStart(2, "0")}`;
-}
 
 /** Races with a result and a logged prediction, newest first. */
 function finishedRaces(index: Index) {
@@ -26,35 +27,88 @@ function finishedRaces(index: Index) {
     .reverse();
 }
 
-export function PastRaces() {
+/** A race's scores from the scorecard file: the latest stage scored for it
+ * (the final prediction before the race), in the given mode. */
+function finalScores(scorecard: Scorecard, season: number, round: number, mode: Mode): { stage: Stage; race: RaceScores } | null {
+  const group = scorecard.groups.find((g) => g.season === season && g.mode === mode);
+  if (!group) return null;
+  for (const stage of [...STAGE_ORDER].reverse()) {
+    const race = group.per_race[stage]?.find((r) => r.round === round);
+    if (race) return { stage, race };
+  }
+  return null;
+}
+
+/** One line about how the final prediction did: "4.6 places off (grid 4.6)
+ * · winner ✓ · podium 1/3". */
+function ScoreLine({ scores }: { scores: { stage: Stage; race: RaceScores } }) {
+  const m = scores.race.metrics;
+  const mae = m.position_mae;
+  const winner = m.winner_hit?.model;
+  const podium = m.podium_hits?.model;
+  const baseline = { pre_weekend: "championship_order", practice: "practice_order", post_quali: "grid_order" }[scores.stage];
+  return (
+    <span className="race-list-score">
+      {STAGE_NAMES[scores.stage]}:{" "}
+      {mae?.model != null && (
+        <>
+          {mae.model.toFixed(1)} places off
+          {mae.baseline != null && <span className="muted"> ({BASELINE_NAMES[baseline]} {mae.baseline.toFixed(1)})</span>}
+        </>
+      )}
+      {winner != null && <> · winner {winner >= 0.5 ? "✓" : "✗"}</>}
+      {podium != null && <> · podium {Math.round(podium * 3)}/3</>}
+    </span>
+  );
+}
+
+export function RaceList() {
   const site = useSiteData();
+  const [withBacktest, setWithBacktest] = useState(false);
   if (site.state === "loading") return <Loading />;
   if (site.state === "error") return <ErrorBox message={site.message} />;
-  const races = finishedRaces(site.data.index);
+  const all = finishedRaces(site.data.index);
+  const races = withBacktest ? all : all.filter((r) => r.live_stages.length > 0);
+  const hasBacktest = all.some((r) => r.backtest_stages.length > 0);
   return (
-    <section>
-      <h1>Past races</h1>
-      <p className="muted">Every logged prediction, stage by stage, next to the real result.</p>
+    <>
+      <p className="muted">
+        Every race we predicted, newest first, with how the final prediction (the last one before the race) did against
+        the simple baseline. Open a race to see every stage next to the full result.
+      </p>
+      {hasBacktest && (
+        <label className="check">
+          <input type="checkbox" checked={withBacktest} onChange={(e) => setWithBacktest(e.target.checked)} />
+          Also show backtest replays (past races re-run after the fact: in-sample, a pipeline check, not a real test)
+        </label>
+      )}
       {races.length === 0 ? (
-        <p>No predicted race has finished yet.</p>
+        <p>No live-predicted race has finished yet.</p>
       ) : (
         <ul className="race-list">
-          {races.map((r) => (
-            <li key={raceKey(r.season, r.round)}>
-              <Link to={`/races/${raceKey(r.season, r.round)}`}>
-                <span className="race-list-name">
-                  {r.season} R{r.round} · {r.name}
-                </span>
-                <span className="race-list-badges">
-                  {r.live_stages.length > 0 && <span className="badge is-live">live</span>}
-                  {r.backtest_stages.length > 0 && <span className="badge">backtest</span>}
-                </span>
-              </Link>
-            </li>
-          ))}
+          {races.map((r) => {
+            const mode: Mode = r.live_stages.length > 0 ? "live" : "backtest";
+            const scores = finalScores(site.data.scorecard, r.season, r.round, mode);
+            return (
+              <li key={raceKey(r.season, r.round)}>
+                <Link to={`/results/${raceKey(r.season, r.round)}`}>
+                  <span className="race-list-text">
+                    <span className="race-list-name">
+                      {r.season} R{r.round} · {r.name}
+                    </span>
+                    {scores && <ScoreLine scores={scores} />}
+                  </span>
+                  <span className="race-list-badges">
+                    {r.live_stages.length > 0 && <span className="badge is-live">live</span>}
+                    {r.backtest_stages.length > 0 && <span className="badge">backtest</span>}
+                  </span>
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       )}
-    </section>
+    </>
   );
 }
 
@@ -74,7 +128,7 @@ export function PastRace() {
       <section>
         <h1>Race not found</h1>
         <p className="muted">
-          There's no logged prediction for that race. <Link to="/races">All past races</Link>
+          There's no logged prediction for that race. <Link to="/results">All results</Link>
         </p>
       </section>
     );
@@ -94,7 +148,7 @@ function RaceReview({ race }: { race: Race }) {
   return (
     <section>
       <p className="eyebrow">
-        <Link to="/races">Past races</Link> · {race.season} · Round {race.round}
+        <Link to="/results">Results</Link> · {race.season} · Round {race.round}
       </p>
       <h1>{race.name}</h1>
       <p className="muted race-meta">{race.circuit}</p>
@@ -139,7 +193,7 @@ function RaceReview({ race }: { race: Race }) {
 }
 
 /** {real driver id: the run's prediction}. A debutant predicted under a
- * temporary id is filed under who he turned out to be (resolved_as). */
+ * temporary id is filed under who they turned out to be (resolved_as). */
 function byDriver(race: Race, run: Run) {
   return new Map(run.drivers.map((d) => [race.drivers[d.driver_id]?.resolved_as ?? d.driver_id, d] as const));
 }

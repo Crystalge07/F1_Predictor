@@ -264,18 +264,18 @@ After each tick the workflow exports small JSON files from a read-only database 
 
 | Page | What it shows |
 | --- | --- |
-| Next race | The latest live prediction: predicted order, win / podium / points / retirement chances, and how the win chances moved from stage to stage |
-| Why | The factors behind any driver's predicted position (SHAP), as a plain-English summary and a bar per factor |
-| Scorecard | Model against each stage's baseline, race by race, and calibration; live, rehearsal and backtest results never mixed |
-| Past races | Every logged prediction at each stage next to the real result |
+| Next race | The home page. A weekend tracker (which predictions are logged, which is next, and what's still to come), the current prediction (predicted order, win / podium / points / retirement chances), the earlier stages, and how the win chances moved. For two days after a race, a "how we did" card puts the real podium next to our final prediction |
+| Results | **Races**: every predicted race, newest first, with how its final prediction did; open one to see every stage next to the full result. **Stats**: model against each stage's baseline, race by race, and calibration. Live predictions by default; backtest replays only when switched on, always labelled |
+| Why | Opened by clicking a driver: the factors behind their predicted position (SHAP), as a plain-English summary and a bar per factor |
 
-![The scorecard: model against baseline for the 2026 backtest](docs/images/dashboard-scorecard.png)
+![The home page during a race weekend: last race's result, the weekend tracker and the current prediction](docs/images/dashboard-next-race.png)
 
 <details>
-<summary>More screenshots (Why, Past races)</summary>
+<summary>More screenshots (Results, Why)</summary>
 
+![Results stats: model against baseline](docs/images/dashboard-stats.png)
+![One race: each stage's prediction next to the result](docs/images/dashboard-past-race.png)
 ![Why: the factors behind one driver's prediction](docs/images/dashboard-why.png)
-![Past races: each stage's prediction next to the result](docs/images/dashboard-past-race.png)
 
 </details>
 

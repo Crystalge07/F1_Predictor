@@ -1,5 +1,5 @@
-// The frame around every page: header with the four pages, footer with
-// when the data last changed.
+// The frame around every page: header with the pages, footer with when the
+// data last changed.
 
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useSiteData } from "../data";
@@ -8,16 +8,16 @@ import { usePageTitle } from "../pageTitle";
 
 const PAGES = [
   { to: "/", label: "Next race", end: true },
-  { to: "/why", label: "Why" },
-  { to: "/scorecard", label: "Scorecard" },
-  { to: "/races", label: "Past races" },
+  { to: "/results", label: "Results" },
   { to: "/about", label: "About" },
 ];
 
 /** The tab title for the current address. */
 function titleFor(path: string): string | null {
   if (path === "/") return null;
-  if (path.startsWith("/races/")) return "Past race";
+  if (path === "/why") return "Why";
+  if (path === "/results/stats") return "Stats";
+  if (path.startsWith("/results/")) return "Race result";
   return PAGES.find((p) => p.to === path)?.label ?? null;
 }
 
